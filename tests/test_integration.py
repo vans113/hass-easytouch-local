@@ -18,18 +18,22 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.easytouch_local import client as client_mod
 from custom_components.easytouch_local.const import (
+    CONF_CONNECTION,
     CONF_POWER_ENTITY,
+    CONF_PUMP_CIRCUITS,
     CONF_READ_ONLY,
     CONF_SCHEDULE_MODE,
     DEFAULT_OPTIONS,
     DOMAIN,
     SCHEDULE_MODE_CONTROLLER,
 )
+from custom_components.easytouch_local.protocol import Action
 
 from .fake_controller import FakeEasyTouch
 from .test_client import FAST
 
 POWER = "sensor.pool_power"
+TWO_SPEED = {CONF_PUMP_CIRCUITS: "6, 2"}  # Michael's pool: Pool + High Speed
 
 
 @pytest.fixture
@@ -51,6 +55,7 @@ def fast(monkeypatch):
     monkeypatch.setattr(integ, "EasyTouchClient", lambda *a, **k: fast_client(*a, **k))
     monkeypatch.setattr(flow, "EasyTouchClient", lambda *a, **k: fast_client(*a, **k))
     monkeypatch.setattr(flow, "PROBE_WAIT", 1.0)
+    monkeypatch.setattr(flow, "PROBE_WAIT_LISTEN", 2.0)
     monkeypatch.setattr(integ, "SETUP_WAIT", 2.0)
     monkeypatch.setattr(coord, "RECONNECT_SETTLE", 0.05)
     monkeypatch.setattr(coord, "SCHEDULE_DEBOUNCE", 0.05)
@@ -129,15 +134,28 @@ async def test_listen_only_reads_but_never_sends(hass: HomeAssistant, fake: Fake
     await _unload(hass, entry)
 
 
-async def test_pool_pump_drives_both_circuits(hass: HomeAssistant, fake: FakeEasyTouch):
+async def test_pool_pump_default_is_just_pool(hass: HomeAssistant, fake: FakeEasyTouch):
     entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    pump = _eid(hass, "switch", "pool_pump")
+    await hass.services.async_call("switch", "turn_on", {"entity_id": pump}, blocking=True)
+    assert fake.state.circuits == {6}
+    assert await _until(hass, lambda: hass.states.get(pump).state == STATE_ON)
+    await _unload(hass, entry)
+
+
+async def test_pool_pump_drives_configured_circuits(hass: HomeAssistant, fake: FakeEasyTouch):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **TWO_SPEED})
     pump = _eid(hass, "switch", "pool_pump")
     assert hass.states.get(pump).state == STATE_OFF
     await hass.services.async_call("switch", "turn_on", {"entity_id": pump}, blocking=True)
     assert fake.state.circuits == {2, 6}
+    on_order = [p.payload[0] for p in fake.commands(Action.SET_CIRCUIT)]
+    assert on_order == [6, 2]
     assert await _until(hass, lambda: hass.states.get(pump).state == STATE_ON)
     await hass.services.async_call("switch", "turn_off", {"entity_id": pump}, blocking=True)
     assert fake.state.circuits == set()
+    off_order = [p.payload[0] for p in fake.commands(Action.SET_CIRCUIT)][2:]
+    assert off_order == [2, 6]  # reverse: motor relay first
     assert await _until(hass, lambda: hass.states.get(pump).state == STATE_OFF)
     await _unload(hass, entry)
 
@@ -145,12 +163,12 @@ async def test_pool_pump_drives_both_circuits(hass: HomeAssistant, fake: FakeEas
 async def test_pump_shows_off_when_relay_on_but_no_power(hass: HomeAssistant, fake: FakeEasyTouch):
     fake.state.circuits = {2, 6}
     hass.states.async_set(POWER, "1620")
-    entry = await _setup(hass, fake, **{CONF_POWER_ENTITY: POWER})
+    entry = await _setup(hass, fake, **{CONF_POWER_ENTITY: POWER, **TWO_SPEED})
     pump = _eid(hass, "switch", "pool_pump")
     assert await _until(hass, lambda: hass.states.get(pump).state == STATE_ON)
     hass.states.async_set(POWER, "20")
     assert await _until(hass, lambda: hass.states.get(pump).state == STATE_OFF)
-    assert hass.states.get(pump).attributes["high_speed_relay"] is True
+    assert hass.states.get(pump).attributes["relays_on"] is True
     await _unload(hass, entry)
 
 
@@ -196,7 +214,7 @@ async def test_controller_mode_writes_and_verifies_schedules(
 
     # October counts as summer (Apr-Oct) for the pump windows.
     monkeypatch.setattr(coord, "_now", lambda: datetime(2026, 10, 26, 8, 0))
-    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **TWO_SPEED})
     coordinator = entry.runtime_data
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
     select = _eid(hass, "select", "schedule_mode")
@@ -266,6 +284,10 @@ async def test_service_mode_blocks_commands(hass: HomeAssistant, fake: FakeEasyT
 
 async def test_config_flow(hass: HomeAssistant, fake: FakeEasyTouch):
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    assert result["type"] is FlowResultType.MENU
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "connect"}
+    )
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_HOST: "127.0.0.1", CONF_PORT: fake.port, CONF_READ_ONLY: True}
@@ -281,6 +303,9 @@ async def test_config_flow(hass: HomeAssistant, fake: FakeEasyTouch):
 async def test_config_flow_no_status(hass: HomeAssistant, fake: FakeEasyTouch):
     fake.silent = True
     result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "connect"}
+    )
     result = await hass.config_entries.flow.async_configure(
         result["flow_id"], {CONF_HOST: "127.0.0.1", CONF_PORT: fake.port}
     )
@@ -300,4 +325,127 @@ async def test_setup_survives_bridge_down(hass: HomeAssistant, fake: FakeEasyTou
     assert await _until(
         hass, lambda: hass.states.get(_eid(hass, "sensor", "air_temp")).state == "91", 6
     )
+    await _unload(hass, entry)
+
+
+async def test_circuits_are_discovered_with_panel_names(hass: HomeAssistant, fake: FakeEasyTouch):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    coordinator = entry.runtime_data
+    assert await _until(hass, lambda: coordinator.client.custom_names.get(1) == "Waterfall", 4)
+    assert await _until(hass, lambda: _has(hass, "switch", "circuit_3"))
+    names = {
+        c: hass.states.get(_eid(hass, "switch", f"circuit_{c}")).attributes["friendly_name"]
+        for c in (2, 3, 6)
+    }
+    assert names == {
+        2: "Pool controller High Speed",
+        3: "Pool controller Waterfall",  # custom name read from the panel
+        6: "Pool controller Pool",
+    }
+    assert not _has(hass, "switch", "circuit_4")  # "not used" on the panel
+    await _unload(hass, entry)
+
+
+async def test_reconnect_re_reads_everything(hass: HomeAssistant, fake: FakeEasyTouch):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    coordinator = entry.runtime_data
+    assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
+    before = len(fake.commands(Action.GET_CIRCUIT))
+    fake.silent = True
+    assert await _until(hass, lambda: coordinator.client.stats.watchdog_trips >= 1)
+    assert await _until(hass, lambda: not coordinator._was_available, 7)  # noticed the outage
+    fake.silent = False
+    assert await _until(
+        hass,
+        lambda: (
+            len(fake.commands(Action.GET_CIRCUIT)) >= before + 18
+            and coordinator.schedule_sync.state == "in_sync"
+        ),
+        8,
+    )
+    assert entry.state is ConfigEntryState.LOADED  # no reload, just a full re-read
+    await _unload(hass, entry)
+
+
+async def test_listen_mode_bridge_dials_in(hass: HomeAssistant):
+    """The bridge is a TCP client pointed at Home Assistant."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    _helpers(hass)
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"listen:{port}",
+        data={CONF_CONNECTION: "listen", CONF_HOST: "127.0.0.1", CONF_PORT: port},
+        options={**DEFAULT_OPTIONS, CONF_POWER_ENTITY: "", CONF_READ_ONLY: False},
+        title="Pool controller",
+    )
+    entry.add_to_hass(hass)
+    fake = FakeEasyTouch(interval=0.05)
+    await fake.start(serve=False)
+    try:
+        await fake.dial("127.0.0.1", port)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        air = _eid(hass, "sensor", "air_temp")
+        assert await _until(hass, lambda: hass.states.get(air).state == "91")
+        pump = _eid(hass, "switch", "pool_pump")
+        await hass.services.async_call("switch", "turn_on", {"entity_id": pump}, blocking=True)
+        assert fake.state.circuits == {6}
+        # Bridge goes quiet: HA drops the socket, the bridge dials back in by itself.
+        coordinator = entry.runtime_data
+        fake.silent = True
+        assert await _until(hass, lambda: hass.states.get(air).state == STATE_UNAVAILABLE)
+        fake.silent = False
+        assert await _until(hass, lambda: hass.states.get(air).state == "91", 6)
+        assert coordinator.client.stats.watchdog_trips >= 1
+        await _unload(hass, entry)
+    finally:
+        await fake.stop()
+
+
+async def test_config_flow_listen(hass: HomeAssistant):
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    fake = FakeEasyTouch(interval=0.05)
+    await fake.start(serve=False)
+    try:
+        await fake.dial("127.0.0.1", port)
+        result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+        assert result["type"] is FlowResultType.MENU
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {"next_step_id": "listen"}
+        )
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PORT: port, CONF_READ_ONLY: True}
+        )
+        assert result["type"] is FlowResultType.CREATE_ENTRY
+        assert result["data"][CONF_CONNECTION] == "listen"
+        await hass.async_block_till_done()
+        await _unload(hass, hass.config_entries.async_entries(DOMAIN)[0])
+    finally:
+        await fake.stop()
+
+
+def _has(hass: HomeAssistant, platform: str, key: str) -> bool:
+    try:
+        _eid(hass, platform, key)
+    except AssertionError:
+        return False
+    return True
+
+
+async def test_quick_reconnect_also_re_reads(hass: HomeAssistant, fake: FakeEasyTouch):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    coordinator = entry.runtime_data
+    assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
+    before = len(fake.commands(Action.GET_CIRCUIT))
+    await fake.kick_clients()  # bridge drops and comes straight back
+    assert await _until(hass, lambda: len(fake.commands(Action.GET_CIRCUIT)) >= before + 18, 6)
     await _unload(hass, entry)

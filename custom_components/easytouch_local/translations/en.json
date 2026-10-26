@@ -3,7 +3,15 @@
     "step": {
       "user": {
         "title": "EasyTouch over RS-485",
-        "description": "Address of the RS-485-to-TCP bridge wired to the EasyTouch (for example an Elfin EW11 in TCP server mode).",
+        "description": "How does your RS-485 bridge (for example an Elfin EW11) talk on the network?",
+        "menu_options": {
+          "connect": "Home Assistant connects to the bridge (bridge in TCP server mode)",
+          "listen": "The bridge connects to Home Assistant (bridge in TCP client mode)"
+        }
+      },
+      "connect": {
+        "title": "Bridge address",
+        "description": "Address of the bridge wired to the EasyTouch.",
         "data": {
           "host": "Bridge host",
           "port": "Bridge TCP port",
@@ -13,16 +21,28 @@
           "read_only": "Leave this on while njsPC is still running. Turn it off in the options when this integration takes over."
         }
       },
+      "listen": {
+        "title": "Let the bridge connect",
+        "description": "Point the bridge's TCP client at this Home Assistant's IP address and the port below. Setup waits up to a minute for it to dial in.",
+        "data": {
+          "port": "Port to listen on",
+          "read_only": "Listen only (never send anything to the controller)"
+        },
+        "data_description": {
+          "read_only": "Leave this on for the first install. Turn it off in the options when this integration takes over."
+        }
+      },
       "reconfigure": {
-        "title": "Change bridge address",
+        "title": "Change connection",
         "data": {
           "host": "Bridge host",
-          "port": "Bridge TCP port"
+          "port": "Port"
         }
       }
     },
     "error": {
-      "no_status": "Connected, but no status broadcast from the EasyTouch arrived within 10 seconds. Check the bridge address, port and RS-485 wiring.",
+      "no_status": "No status broadcast from the EasyTouch arrived. Check the bridge address or where the bridge points, the port, and the RS-485 wiring.",
+      "port_in_use": "Something on this Home Assistant is already using that port.",
       "unknown": "Unexpected error"
     },
     "abort": {
@@ -37,9 +57,6 @@
         "data": {
           "read_only": "Listen only (never send anything)",
           "schedule_mode": "Who runs the pump schedule",
-          "pool_circuit": "Pool circuit number",
-          "high_speed_circuit": "High-speed (motor) circuit number",
-          "extra_circuits": "Extra circuit switches",
           "power_entity": "Pump power sensor",
           "power_threshold": "Running if power is at least (W)",
           "summer_months": "Summer months",
@@ -50,19 +67,24 @@
           "summer_weekend_stop": "Summer weekend stop",
           "winter_start": "Winter start",
           "winter_stop": "Winter stop",
-          "source_addr": "RS-485 address to send from"
+          "source_addr": "RS-485 address to send from",
+          "pump_circuits": "Circuits the pool pump switch turns on together",
+          "circuit_names": "Rename circuits"
         },
         "data_description": {
           "schedule_mode": "Home Assistant: HA switches the pump and the controller keeps no schedules. Controller: HA writes the schedules into the controller and verifies them, and the controller runs the pump on its own.",
-          "extra_circuits": "Comma-separated number:name pairs, e.g. 3:AUX 2, 4:Lights",
           "power_entity": "Optional. When it's reporting, a high-speed relay that's on with no motor draw shows the pool pump as off.",
           "summer_months": "Months that use the summer weekday/weekend times, e.g. 4-10",
-          "source_addr": "Leave at 33 unless another remote uses it."
-        }
+          "source_addr": "Leave at 33 unless another remote uses it.",
+          "pump_circuits": "Circuit numbers in the order to turn on (off goes in reverse). Usually just 6 (Pool). A two-speed pump wired to the high-speed relay needs Pool and High Speed, e.g. 6, 2.",
+          "circuit_names": "Optional number:name pairs to override the panel's names, e.g. 2:Pump High Speed, 3:Lights"
+        },
+        "description": "Circuits found on the controller: {circuits}"
       }
     },
     "error": {
-      "bad_months": "Use month numbers like 4-10 or 4,5,6"
+      "bad_months": "Use month numbers like 4-10 or 4,5,6",
+      "bad_circuits": "Enter one or more circuit numbers, e.g. 6 or 6, 2"
     }
   },
   "selector": {
@@ -75,22 +97,46 @@
   },
   "entity": {
     "switch": {
-      "pool_pump": { "name": "Pool pump" }
+      "pool_pump": {
+        "name": "Pool pump"
+      }
     },
     "binary_sensor": {
-      "connected": { "name": "Controller link" },
-      "service_mode": { "name": "Panel service mode" },
-      "freeze_protect": { "name": "Freeze protection" },
-      "start_timer": { "name": "Pump start timer" },
-      "water_sensor_fault": { "name": "Water temperature sensor" },
-      "schedule_problem": { "name": "Schedule sync" }
+      "connected": {
+        "name": "Controller link"
+      },
+      "service_mode": {
+        "name": "Panel service mode"
+      },
+      "freeze_protect": {
+        "name": "Freeze protection"
+      },
+      "start_timer": {
+        "name": "Pump start timer"
+      },
+      "water_sensor_fault": {
+        "name": "Water temperature sensor"
+      },
+      "schedule_problem": {
+        "name": "Schedule sync"
+      }
     },
     "sensor": {
-      "water_temp": { "name": "Water temperature" },
-      "air_temp": { "name": "Air temperature" },
-      "salt_level": { "name": "Salt level" },
-      "chlorinator_output": { "name": "Chlorinator output" },
-      "chlorinator_status": { "name": "Chlorinator status" },
+      "water_temp": {
+        "name": "Water temperature"
+      },
+      "air_temp": {
+        "name": "Air temperature"
+      },
+      "salt_level": {
+        "name": "Salt level"
+      },
+      "chlorinator_output": {
+        "name": "Chlorinator output"
+      },
+      "chlorinator_status": {
+        "name": "Chlorinator status"
+      },
       "panel_mode": {
         "name": "Panel mode",
         "state": {
@@ -100,10 +146,18 @@
           "service_timeout": "Service/Timeout"
         }
       },
-      "controller_schedules": { "name": "Controller schedules" },
-      "controller_time": { "name": "Controller clock" },
-      "clock_drift": { "name": "Clock drift" },
-      "delay_code": { "name": "Delay code" }
+      "controller_schedules": {
+        "name": "Controller schedules"
+      },
+      "controller_time": {
+        "name": "Controller clock"
+      },
+      "clock_drift": {
+        "name": "Clock drift"
+      },
+      "delay_code": {
+        "name": "Delay code"
+      }
     },
     "select": {
       "schedule_mode": {
@@ -115,8 +169,12 @@
       }
     },
     "button": {
-      "sync_clock": { "name": "Sync controller clock" },
-      "sync_schedules": { "name": "Sync controller schedules" }
+      "sync_clock": {
+        "name": "Sync controller clock"
+      },
+      "sync_schedules": {
+        "name": "Sync controller schedules"
+      }
     }
   },
   "issues": {

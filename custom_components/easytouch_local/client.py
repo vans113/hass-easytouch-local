@@ -32,10 +32,12 @@ from typing import Any
 from .protocol import (
     CONTROLLER_ADDR,
     DEFAULT_SOURCE_ADDR,
+    MAX_CIRCUIT_ID,
     MAX_SCHEDULE_SLOTS,
     Action,
     ChlorPacket,
     ChlorState,
+    CircuitInfo,
     FrameParser,
     Packet,
     ScheduleSlot,
@@ -48,6 +50,8 @@ from .protocol import (
     cmd_set_schedule,
     decode_chlor_frame,
     decode_chlor_status,
+    decode_circuit_config,
+    decode_custom_name,
     decode_schedule,
     decode_status,
 )
@@ -121,10 +125,18 @@ class EasyTouchClient:
         *,
         source_addr: int = DEFAULT_SOURCE_ADDR,
         read_only: bool = True,
+        listen: bool = False,
         timing: Timing | None = None,
     ) -> None:
+        """``listen=False``: connect to the bridge at host:port.
+
+        ``listen=True``: open a TCP server on host:port (host "0.0.0.0" for all
+        interfaces) and let the bridge connect to us, the way an EW11 in TCP
+        client mode connects to its server. The newest connection wins.
+        """
         self.host = host
         self.port = port
+        self.listen = listen
         self.source_addr = source_addr
         self.read_only = read_only
         self.timing = timing or Timing()
@@ -135,6 +147,9 @@ class EasyTouchClient:
         self.chlor = ChlorState()
         self.schedules: dict[int, ScheduleSlot] = {}
         self.schedules_read_at: float | None = None
+        self.circuits: dict[int, CircuitInfo] = {}
+        self.custom_names: dict[int, str] = {}
+        self.peer: str | None = None
 
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
@@ -149,6 +164,10 @@ class EasyTouchClient:
         self._stopping = False
         self._cmd_lock = asyncio.Lock()
         self._status_event = asyncio.Event()
+        self._server: asyncio.Server | None = None
+        self._incoming: asyncio.Queue[tuple[asyncio.StreamReader, asyncio.StreamWriter]] = (
+            asyncio.Queue()
+        )
 
     # ------------------------------------------------------------------ #
     # Lifecycle
@@ -168,6 +187,14 @@ class EasyTouchClient:
                 await self._run_task
             self._run_task = None
         await self._close("stopped")
+        if self._server is not None:
+            self._server.close()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self._server.wait_closed(), 2)
+            self._server = None
+        while not self._incoming.empty():
+            _, writer = self._incoming.get_nowait()
+            writer.close()
 
     async def wait_for_status(self, wait: float) -> bool:
         """Wait until a status broadcast has arrived (setup and config flow)."""
@@ -217,6 +244,9 @@ class EasyTouchClient:
     # Connection loop
     # ------------------------------------------------------------------ #
     async def _run(self) -> None:
+        if self.listen:
+            await self._run_listen()
+            return
         failures = 0
         while not self._stopping:
             try:
@@ -239,10 +269,62 @@ class EasyTouchClient:
             self.stats.reconnects += 1
             await asyncio.sleep(delay)
 
+    async def _run_listen(self) -> None:
+        """Server mode: wait for the bridge to connect, read until dead, repeat."""
+        failures = 0
+        while not self._stopping:
+            if self._server is None:
+                try:
+                    self._server = await asyncio.start_server(
+                        self._accept, self.host, self.port, reuse_address=True
+                    )
+                    _LOGGER.info("Waiting for the EasyTouch bridge on port %s", self.port)
+                    failures = 0
+                except OSError as err:
+                    self.stats.last_error = f"can't listen on port {self.port}: {err}"
+                    _LOGGER.error("EasyTouch Local %s", self.stats.last_error)
+                    await asyncio.sleep(
+                        self.timing.backoff[min(failures, len(self.timing.backoff) - 1)]
+                    )
+                    failures += 1
+                    continue
+            reader, writer = await self._incoming.get()
+            if writer.is_closing():
+                continue  # replaced by a newer connection before we got to it
+            try:
+                self._attach(reader, writer)
+                await self._read_until_dead()
+            except asyncio.CancelledError:
+                raise
+            except (OSError, TimeoutError, EasyTouchError) as err:
+                self.stats.last_error = f"{type(err).__name__}: {err}"
+                _LOGGER.debug("EasyTouch link from %s: %s", self.peer, err)
+            except Exception:
+                _LOGGER.exception("Unexpected error on the EasyTouch link")
+                self.stats.last_error = "unexpected error (see log)"
+            # Closing the socket makes the bridge reconnect on its own.
+            await self._close("link lost")
+            self.stats.reconnects += 1
+
+    async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        peer = writer.get_extra_info("peername")
+        _LOGGER.debug("Bridge connected from %s", peer)
+        if self._writer is not None and not self._writer.is_closing():
+            # A new connection means the bridge gave up on the old one.
+            self._writer.close()
+        # Drop anything still waiting in the queue; only the newest matters.
+        while not self._incoming.empty():
+            _, old = self._incoming.get_nowait()
+            old.close()
+        self._incoming.put_nowait((reader, writer))
+
     async def _connect(self) -> None:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(self.host, self.port), self.timing.connect_timeout
         )
+        self._attach(reader, writer)
+
+    def _attach(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         sock = writer.get_extra_info("socket")
         if sock is not None:
             with contextlib.suppress(OSError, AttributeError):
@@ -258,7 +340,9 @@ class EasyTouchClient:
         self._last_rx_at = now
         self.stats.connects += 1
         self.stats.last_connected = time.time()
-        _LOGGER.info("Connected to EasyTouch bridge %s:%s", self.host, self.port)
+        peer = writer.get_extra_info("peername")
+        self.peer = f"{peer[0]}:{peer[1]}" if peer else f"{self.host}:{self.port}"
+        _LOGGER.info("Connected to EasyTouch bridge %s", self.peer)
         self._notify()
 
     async def _read_until_dead(self) -> None:
@@ -298,7 +382,7 @@ class EasyTouchClient:
         self._waiters.clear()
         if was_open:
             self.stats.last_disconnected = time.time()
-            _LOGGER.info("EasyTouch bridge %s:%s disconnected (%s)", self.host, self.port, reason)
+            _LOGGER.info("EasyTouch bridge %s disconnected (%s)", self.peer, reason)
             self._notify()
 
     # ------------------------------------------------------------------ #
@@ -329,6 +413,16 @@ class EasyTouchClient:
             if slot is not None and 1 <= slot.slot <= MAX_SCHEDULE_SLOTS:
                 changed = self.schedules.get(slot.slot) != slot
                 self.schedules[slot.slot] = slot
+        elif frame.action == Action.CIRCUIT_CONFIG and frame.source == CONTROLLER_ADDR:
+            info = decode_circuit_config(frame.payload)
+            if info is not None:
+                changed = self.circuits.get(info.circuit) != info
+                self.circuits[info.circuit] = info
+        elif frame.action == Action.CUSTOM_NAME and frame.source == CONTROLLER_ADDR:
+            named = decode_custom_name(frame.payload)
+            if named is not None:
+                changed = self.custom_names.get(named[0]) != named[1]
+                self.custom_names[named[0]] = named[1]
         elif frame.action == Action.CHLOR_STATUS and frame.source == CONTROLLER_ADDR:
             before = (self.chlor.salt_ppm, self.chlor.status_byte)
             decode_chlor_status(frame.payload, self.chlor)
@@ -487,6 +581,59 @@ class EasyTouchClient:
         self._notify()
         return result
 
+    async def read_circuits(self) -> dict[int, CircuitInfo]:
+        """Ask the controller how each circuit is set up, plus any custom names."""
+        async with self._cmd_lock:
+            for cid in range(1, MAX_CIRCUIT_ID + 1):
+                pkt = await self._request(
+                    Action.GET_CIRCUIT,
+                    bytes([cid]),
+                    lambda p, cid=cid: (
+                        p.action == Action.CIRCUIT_CONFIG
+                        and p.source == CONTROLLER_ADDR
+                        and len(p.payload) >= 3
+                        and p.payload[0] == cid
+                    ),
+                )
+                info = decode_circuit_config(pkt.payload)
+                if info is not None:
+                    self.circuits[cid] = info
+            wanted_names = {
+                i.custom_name_slot
+                for i in self.circuits.values()
+                if i.in_use and i.custom_name_slot is not None
+            }
+            for slot in sorted(wanted_names):
+                pkt = await self._request(
+                    Action.GET_CUSTOM_NAME,
+                    bytes([slot]),
+                    lambda p, slot=slot: (
+                        p.action == Action.CUSTOM_NAME
+                        and p.source == CONTROLLER_ADDR
+                        and len(p.payload) >= 1
+                        and p.payload[0] == slot
+                    ),
+                )
+                named = decode_custom_name(pkt.payload)
+                if named is not None:
+                    self.custom_names[named[0]] = named[1]
+        self._notify()
+        return dict(self.circuits)
+
+    async def _request(
+        self, action: int, payload: bytes, match: Callable[[Packet], bool]
+    ) -> Packet:
+        """Send a config request and wait for the matching answer (with retries)."""
+        for _ in range(self.timing.attempts):
+            waiter = self._expect(match)
+            await self._send_or_drop(waiter, action, payload)
+            pkt = await self._await(waiter, self.timing.schedule_read_timeout)
+            if pkt is not None:
+                return pkt
+        raise CommandNotConfirmedError(
+            f"the controller didn't answer request {action} {payload.hex()}"
+        )
+
     async def write_schedule(self, slot: int, wanted: WantedSchedule | None) -> ScheduleSlot:
         """Write (or clear) a slot, then read it back from the controller to prove it stuck."""
         async with self._cmd_lock:
@@ -536,6 +683,10 @@ class EasyTouchClient:
             "connected": self.connected,
             "available": self.available,
             "read_only": self.read_only,
+            "mode": "listen" if self.listen else "connect",
+            "peer": self.peer,
+            "circuits": {k: str(v) for k, v in sorted(self.circuits.items())},
+            "custom_names": self.custom_names,
             "status_age_s": None if self.status_age is None else round(self.status_age, 1),
             "status_raw": s.raw.hex(" ") if s else None,
             "schedules": {k: str(v) for k, v in sorted(self.schedules.items())},

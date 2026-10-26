@@ -35,6 +35,16 @@ class FakeState:
     water: int = 0xF4  # faulted sensor, like the real one
     air: int = 91
     # slot -> 7-byte payload; slots 7 and 8 hold egg timers like a real panel
+    # circuit -> (function, name id); 19 = not used. 201 = custom name slot 1.
+    circuit_config: dict[int, tuple[int, int]] = field(
+        default_factory=lambda: {
+            2: (0, 43),  # generic, "High Speed"
+            3: (7, 201),  # light, custom name 1
+            4: (19, 0),  # not used
+            6: (2 | 64, 61),  # pool (freeze protect), "Pool"
+        }
+    )
+    custom_names: dict[int, str] = field(default_factory=lambda: {1: "Waterfall"})
     schedules: dict[int, bytes] = field(
         default_factory=lambda: {
             7: bytes([7, 2, 25, 0, 12, 0, 0]),  # egg timer, circuit 2, 12 h
@@ -58,9 +68,10 @@ class FakeEasyTouch:
         self._tasks: list[asyncio.Task] = []
 
     # ------------------------------------------------------------------ #
-    async def start(self) -> None:
-        self.server = await asyncio.start_server(self._client, "127.0.0.1", 0)
-        self.port = self.server.sockets[0].getsockname()[1]
+    async def start(self, serve: bool = True) -> None:
+        if serve:
+            self.server = await asyncio.start_server(self._client, "127.0.0.1", 0)
+            self.port = self.server.sockets[0].getsockname()[1]
         self._tasks.append(asyncio.get_running_loop().create_task(self._broadcast_loop()))
 
     async def stop(self) -> None:
@@ -80,6 +91,21 @@ class FakeEasyTouch:
             with contextlib.suppress(Exception):
                 await w.wait_closed()
         self.clients.clear()
+
+    async def dial(self, host: str, port: int, retry: float = 0.05) -> None:
+        """Act like an EW11 in TCP client mode: connect out, reconnect when dropped."""
+
+        async def loop() -> None:
+            while True:
+                try:
+                    reader, writer = await asyncio.open_connection(host, port)
+                except OSError:
+                    await asyncio.sleep(retry)
+                    continue
+                await self._client(reader, writer)
+                await asyncio.sleep(retry)
+
+        self._tasks.append(asyncio.get_running_loop().create_task(loop()))
 
     def commands(self, action: int) -> list[Packet]:
         return [p for p in self.received if p.action == action]
@@ -149,6 +175,8 @@ class FakeEasyTouch:
 
     async def _handle(self, pkt: Packet) -> None:
         s = self.state
+        if self.silent:
+            return  # a dead link: nothing gets through either way
         if self.drop_writes.get(pkt.action, 0) > 0:
             self.drop_writes[pkt.action] -= 1
             return  # silently ignored, like the real panel sometimes does
@@ -167,11 +195,23 @@ class FakeEasyTouch:
                 s.schedules[slot] = bytes(pkt.payload[:7])
         elif pkt.action == Action.SET_CLOCK:
             s.hour, s.minute = pkt.payload[0], pkt.payload[1]
+        elif pkt.action == Action.GET_CIRCUIT:
+            cid = pkt.payload[0]
+            func, name = s.circuit_config.get(cid, (19, 0))
+            reply = self._frame(Action.CIRCUIT_CONFIG, bytes([cid, func, name, 0, 0]))
+        elif pkt.action == Action.GET_CUSTOM_NAME:
+            slot = pkt.payload[0]
+            text = s.custom_names.get(slot, "").encode()[:11].ljust(11, b"\x00")
+            reply = self._frame(Action.CUSTOM_NAME, bytes([slot]) + text)
         elif pkt.action == Action.GET_SCHEDULE:
             slot = pkt.payload[0]
             body = s.schedules.get(slot, bytes([slot, 0, 0, 0, 0, 0, 0]))
             reply = self._frame(Action.SCHEDULE_CONFIG, body)
-        if self.ack and pkt.action != Action.GET_SCHEDULE:
+        if self.ack and pkt.action not in (
+            Action.GET_SCHEDULE,
+            Action.GET_CIRCUIT,
+            Action.GET_CUSTOM_NAME,
+        ):
             reply = Packet(1, pkt.source, 16, Action.ACK, bytes([pkt.action])).to_bytes() + reply
         if reply:
             await self._write_all(reply)

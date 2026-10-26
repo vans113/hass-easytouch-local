@@ -9,8 +9,10 @@ from homeassistant.helpers import device_registry as dr
 
 from .client import EasyTouchClient
 from .const import (
+    CONF_CONNECTION,
     CONF_READ_ONLY,
     CONF_SOURCE_ADDR,
+    CONNECTION_LISTEN,
     DEFAULT_OPTIONS,
     DOMAIN,
     LOGGER,
@@ -43,11 +45,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: EasyTouchConfigEntry) ->
         entry.data[CONF_PORT],
         source_addr=int(options[CONF_SOURCE_ADDR]),
         read_only=bool(options[CONF_READ_ONLY]),
+        listen=entry.data.get(CONF_CONNECTION) == CONNECTION_LISTEN,
     )
     client.start()
     if not await client.wait_for_status(SETUP_WAIT):
         LOGGER.warning(
-            "No status from the EasyTouch at %s:%s yet; it will keep trying",
+            "No status from the EasyTouch yet (%s %s:%s); it will keep trying",
+            "listening on" if client.listen else "bridge",
             client.host,
             client.port,
         )

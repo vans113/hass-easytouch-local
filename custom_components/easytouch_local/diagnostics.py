@@ -24,7 +24,8 @@ async def async_get_config_entry_diagnostics(
         "clock_drift_min": c.clock_drift,
         "pump": {
             "running": c.pump_running,
-            "high_speed_relay": c.high_speed_on,
+            "pump_circuits": c.pump_circuits,
+            "pump_relays_on": c.pump_relays_on,
             "power_w": c.power_reading(),
         },
     }

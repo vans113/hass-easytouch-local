@@ -1,11 +1,12 @@
-"""Switches: the pool pump and the controller's circuits."""
+"""Switches: the pool pump and every circuit on the controller."""
 
 from __future__ import annotations
 
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import EasyTouchConfigEntry
@@ -19,21 +20,32 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    entities: list[SwitchEntity] = [PoolPumpSwitch(coordinator)]
-    entities += [
-        CircuitSwitch(coordinator, circuit, name)
-        for circuit, name in sorted(coordinator.circuit_names.items())
-    ]
-    async_add_entities(entities)
+    added: set[int] = set()
+
+    @callback
+    def add_circuits() -> None:
+        """Add a switch for every circuit we know about and haven't added yet."""
+        new = [c for c in coordinator.circuit_ids() if c not in added]
+        added.update(new)
+        coordinator.mark_circuits_known(set(new))
+        if new:
+            async_add_entities(CircuitSwitch(coordinator, c) for c in new)
+
+    async_add_entities([PoolPumpSwitch(coordinator)])
+    add_circuits()
+    # Circuits found later (circuit setup read after a reconnect) appear on the fly.
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, coordinator.new_circuits_signal, add_circuits)
+    )
 
 
 class PoolPumpSwitch(EasyTouchEntity, SwitchEntity):
-    """Pool + high speed together; on only when the motor is really running.
+    """Turns the configured pump circuits on together (and off in reverse).
 
-    The motor runs on the high-speed relay. The Pool circuit alone only holds
-    that relay for the controller's 5-minute start timer, so both go together.
-    When a live power reading is configured, a relay that's on with no motor
-    draw (after a grace period) shows as off.
+    Some pools need more than one circuit for the pump to keep running, for
+    example Pool plus a two-speed pump's High Speed. It's on when all of them
+    are on and, if a live power reading is configured, the motor is drawing
+    power.
     """
 
     _attr_translation_key = "pool_pump"
@@ -51,8 +63,10 @@ class PoolPumpSwitch(EasyTouchEntity, SwitchEntity):
         c = self.coordinator
         status = self.status
         return {
-            "high_speed_relay": c.high_speed_on,
-            "pool_circuit": bool(status and status.is_on(c.pool_circuit)),
+            "circuits": {
+                c.circuit_name(cid): bool(status and status.is_on(cid)) for cid in c.pump_circuits
+            },
+            "relays_on": c.pump_relays_on,
             "motor_power_w": c.power_reading(),
             "start_timer": bool(status and status.start_timer),
         }
@@ -65,13 +79,17 @@ class PoolPumpSwitch(EasyTouchEntity, SwitchEntity):
 
 
 class CircuitSwitch(EasyTouchEntity, SwitchEntity):
-    """One controller circuit, as the controller reports it."""
+    """One controller circuit, named as on the panel."""
 
-    def __init__(self, coordinator: EasyTouchCoordinator, circuit: int, name: str) -> None:
+    _attr_icon = "mdi:electric-switch"
+
+    def __init__(self, coordinator: EasyTouchCoordinator, circuit: int) -> None:
         super().__init__(coordinator, f"circuit_{circuit}")
         self.circuit = circuit
-        self._attr_name = name
-        self._attr_icon = "mdi:electric-switch"
+
+    @property
+    def name(self) -> str:
+        return self.coordinator.circuit_name(self.circuit)
 
     @property
     def is_on(self) -> bool:
@@ -80,7 +98,12 @@ class CircuitSwitch(EasyTouchEntity, SwitchEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        return {"circuit_id": self.circuit}
+        info = self.coordinator.client.circuits.get(self.circuit)
+        return {
+            "circuit_id": self.circuit,
+            "pump_circuit": self.circuit in self.coordinator.pump_circuits,
+            "freeze_protect": info.freeze if info else None,
+        }
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_circuit(self.circuit, True)

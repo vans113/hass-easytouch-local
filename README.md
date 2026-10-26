@@ -10,8 +10,8 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 
 | Entity | What it does |
 | --- | --- |
-| `switch.pool_controller_pool_pump` | The pool pump. Turns **Pool and High speed on together** (and off, high speed first). Shows **on** only while the high-speed relay is on and, if a power sensor is set, the motor is actually drawing power. |
-| `switch.pool_controller_pool`, `switch.pool_controller_high_speed` | The raw circuits, plus any extra circuits you name in the options |
+| `switch.pool_controller_<circuit>` | **One switch per circuit**, found automatically and named as on the panel (custom names included). Circuits set to *Not Used* are skipped. |
+| `switch.pool_controller_pool_pump` | The pool pump. Turns the **pump circuits** you choose on together, in order, and off in reverse. On when all of them are on and, if a power sensor is set, the motor is actually drawing power. |
 | `select.pool_controller_schedule_runs_on` | **Home Assistant** (HA switches the pump; the controller keeps no schedules) or **Controller** (HA writes the schedules into the controller and the controller runs the pump itself) |
 | `binary_sensor.pool_controller_controller_link` | Fresh status is arriving from the controller |
 | `binary_sensor.pool_controller_schedule_sync` | Problem: the controller's schedules couldn't be made to match |
@@ -25,12 +25,22 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 | `sensor.pool_controller_controller_clock`, `..._clock_drift` | The controller's clock and how far it is from HA (diagnostic) |
 | `button.pool_controller_sync_controller_clock`, `..._sync_controller_schedules` | Do it now |
 
-## Why the pump switch drives two circuits
+## Pump circuits
 
-On this pool the motor is wired to the **high-speed relay (AUX 1)**. When the Pool circuit turns on, the EasyTouch holds the high-speed relay for a 5-minute start timer and then drops it, expecting the motor to carry on at low speed. Nothing is wired to low speed, so the motor stops. Turning Pool **and** High speed on together keeps it running. The start timer shows up in the status broadcast (byte 12, bit 3), which njsPC doesn't decode; this integration exposes it as `pump_start_timer`.
+Most pools run the pump from the **Pool** circuit (6), and that's the default. Some need more than one circuit on at once. On a two-speed pump wired only to the **High Speed** relay, for example, the EasyTouch holds high speed for its 5-minute start timer after Pool turns on and then drops it, expecting the motor to carry on at low speed. With nothing on low speed the motor stops. Setting the pump circuits to `6, 2` (Pool, then High Speed) keeps it running. The start timer shows up in the status broadcast (byte 12, bit 3), which njsPC doesn't decode; this integration exposes it as `pump_start_timer`.
+
+In Controller schedule mode every pump circuit gets its own schedule entry at the same times.
+
+## Connecting to the bridge
+
+Two ways, picked when you add the integration:
+
+- **Home Assistant connects to the bridge**: the bridge (EW11) is a TCP *server*; enter its IP and port.
+- **The bridge connects to Home Assistant**: the bridge is a TCP *client*. Point its socket at Home Assistant's IP and the port you choose here (8899 by default). The newest connection always wins, and when the link goes quiet Home Assistant closes the socket so the bridge dials back in by itself.
 
 ## Reliability
 
+- **Every reconnect gets a full re-read.** Whenever the link comes back, even after a blip too short to make anything unavailable, the integration re-reads the circuit setup, re-checks the schedules and checks the clock: everything a reload would do, without tearing entities down.
 - **Dead links are detected and fixed automatically.** The EasyTouch broadcasts its status about every 2 seconds, so a healthy link is never quiet. If no valid frame arrives for 10 seconds the connection is treated as dead, even if the socket still looks open, and is reopened with back-off (1, 2, 5, 10, 30 s). No reload is ever needed. After 30 seconds without status, entities go **unavailable** instead of showing stale values.
 - **Every command is confirmed against the controller.** Circuit changes wait for the next status broadcasts to show them, schedule writes are read back from the controller slot by slot, and clock writes are checked in the broadcasts. Anything that doesn't show up is resent (3 tries), then the call fails with an error instead of failing silently.
 - **One command at a time**, at least a second apart, sent into a quiet moment on the bus. The EasyTouch silently drops writes that arrive too close together.
@@ -54,8 +64,9 @@ The controller's clock is set from Home Assistant every night at 03:00 (which al
 ## Installation
 
 1. HACS → ⋮ → **Custom repositories** → add this repository as an *Integration*, then install **EasyTouch Local** and restart Home Assistant.
-2. Settings → Devices & services → **Add integration** → *EasyTouch Local*. Enter the bridge's IP and TCP port.
-3. Leave **Listen only** on for the first install. In this mode nothing is ever sent to the controller, so it can run next to njsPC (the bridge must allow two TCP connections; see VERIFY.md).
+2. Settings → Devices & services → **Add integration** → *EasyTouch Local*, then pick how the bridge connects (see above).
+3. Leave **Listen only** on for the first install. In this mode nothing is ever sent to the controller.
+4. In the options, set **pump circuits** if your pump needs more than Pool (the options page lists the circuits it found).
 
 ## Options
 
@@ -63,8 +74,8 @@ The controller's clock is set from Home Assistant every night at 03:00 (which al
 | --- | --- | --- |
 | Listen only | on | Never send anything to the controller |
 | Who runs the pump schedule | Home Assistant | See *Schedules* |
-| Pool circuit / High-speed circuit | 6 / 2 | Circuit numbers on the EasyTouch |
-| Extra circuit switches | — | `3:AUX 2, 4:Lights` style list |
+| Pump circuits | 6 | Circuits the pool pump switch turns on together, in order (`6, 2` for Pool + High Speed) |
+| Rename circuits | — | Optional `2:Pump High Speed, 3:Lights` overrides for the panel's names |
 | Pump power sensor | SPAN pool equipment sensor | Optional; vetoes "on" when the relay is on but the motor draws nothing |
 | Running if power is at least | 300 W | Threshold for the above |
 | Summer months | 4-10 | Months that use the summer weekday/weekend windows |

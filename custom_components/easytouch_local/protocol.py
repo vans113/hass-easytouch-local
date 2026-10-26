@@ -40,17 +40,132 @@ EGG_TIMER_MARKER = 25  # start-hour byte of a slot that holds an egg timer
 # Water/air bytes this high mean an open or unplugged thermistor.
 SENSOR_FAULT_MIN = 240
 
+# Circuit ids an EasyTouch can have: 1-10 circuits, 11-18 features.
+MAX_CIRCUIT_ID = 18
+CIRCUIT_FUNCTION_NOT_USED = 19
+CUSTOM_NAME_BASE = 200
+
+# Built-in circuit names, by name id (from the EasyTouch panel's list).
+CIRCUIT_NAMES = [
+    "Not Used",
+    "Aerator",
+    "Air Blower",
+    "AUX 1",
+    "AUX 2",
+    "AUX 3",
+    "AUX 4",
+    "AUX 5",
+    "AUX 6",
+    "AUX 7",
+    "AUX 8",
+    "AUX 9",
+    "AUX 10",
+    "Backwash",
+    "Back Light",
+    "BBQ Light",
+    "Beach Light",
+    "Booster Pump",
+    "Bug Light",
+    "Cabana Lights",
+    "Chemical Feeder",
+    "Chlorinator",
+    "Cleaner",
+    "Color Wheel",
+    "Deck Light",
+    "Drain Line",
+    "Drive Light",
+    "Edge Pump",
+    "Entry Light",
+    "Fan",
+    "Fiber Optic",
+    "Fiber Works",
+    "Fill Line",
+    "Floor Cleaner",
+    "Fogger",
+    "Fountain",
+    "Fountain 1",
+    "Fountain 2",
+    "Fountain 3",
+    "Fountains",
+    "Front Light",
+    "Garden Lights",
+    "Gazebo Lights",
+    "High Speed",
+    "Hi-Temp",
+    "House Light",
+    "Jets",
+    "Lights",
+    "Low Speed",
+    "Lo-Temp",
+    "Malibu Lights",
+    "Mist",
+    "Music",
+    "Not Used",
+    "Ozonator",
+    "Path Lights",
+    "Patio Lights",
+    "Perimeter Light",
+    "PG2000",
+    "Pond Light",
+    "Pool Pump",
+    "Pool",
+    "Pool High",
+    "Pool Light",
+    "Pool Low",
+    "SAM",
+    "Pool SAM 1",
+    "Pool SAM 2",
+    "Pool SAM 3",
+    "Security Light",
+    "Slide",
+    "Solar",
+    "Spa",
+    "Spa High",
+    "Spa Light",
+    "Spa Low",
+    "Spa SAL",
+    "Spa SAM",
+    "Spa Waterfall",
+    "Spillway",
+    "Sprinklers",
+    "Stream",
+    "Statue Light",
+    "Swim Jets",
+    "Water Feature",
+    "Water Feature Light",
+    "Waterfall",
+    "Waterfall 1",
+    "Waterfall 2",
+    "Waterfall 3",
+    "Whirlpool",
+    "Waterfall Light",
+    "Yard Light",
+    "AUX EXTRA",
+    "Feature 1",
+    "Feature 2",
+    "Feature 3",
+    "Feature 4",
+    "Feature 5",
+    "Feature 6",
+    "Feature 7",
+    "Feature 8",
+]
+
 
 class Action(IntEnum):
     """Action bytes we send or understand."""
 
     ACK = 1
     STATUS = 2
+    CUSTOM_NAME = 10
+    CIRCUIT_CONFIG = 11
     SCHEDULE_CONFIG = 17
     CHLOR_STATUS = 25
     SET_CLOCK = 133
     SET_CIRCUIT = 134
     SET_SCHEDULE = 145
+    GET_CUSTOM_NAME = 202
+    GET_CIRCUIT = 203
     GET_SCHEDULE = 209
 
 
@@ -350,6 +465,45 @@ def decode_schedule(payload: bytes) -> ScheduleSlot | None:
     run_once = end_h == 26
     end = 0 if run_once else end_h * 60 + end_m
     return ScheduleSlot(slot, circuit, start_h * 60 + start_m, end, days & 0x7F, run_once=run_once)
+
+
+@dataclass(frozen=True, slots=True)
+class CircuitInfo:
+    """A circuit as configured on the controller (action 11)."""
+
+    circuit: int
+    function: int
+    name_id: int
+    freeze: bool
+
+    @property
+    def in_use(self) -> bool:
+        return self.function != CIRCUIT_FUNCTION_NOT_USED and self.name_id != 0
+
+    @property
+    def custom_name_slot(self) -> int | None:
+        return self.name_id - CUSTOM_NAME_BASE if self.name_id >= CUSTOM_NAME_BASE else None
+
+    def name(self, custom_names: dict[int, str]) -> str:
+        slot = self.custom_name_slot
+        if slot is not None:
+            return custom_names.get(slot) or f"Circuit {self.circuit}"
+        if 0 < self.name_id < len(CIRCUIT_NAMES):
+            return CIRCUIT_NAMES[self.name_id]
+        return f"Circuit {self.circuit}"
+
+
+def decode_circuit_config(payload: bytes) -> CircuitInfo | None:
+    if len(payload) < 3 or not 1 <= payload[0] <= MAX_CIRCUIT_ID:
+        return None
+    return CircuitInfo(payload[0], payload[1] & 63, payload[2], bool(payload[1] & 64))
+
+
+def decode_custom_name(payload: bytes) -> tuple[int, str] | None:
+    if len(payload) < 2:
+        return None
+    text = bytes(b for b in payload[1:12] if 32 <= b < 127).decode("ascii").strip()
+    return payload[0], text
 
 
 @dataclass(slots=True)

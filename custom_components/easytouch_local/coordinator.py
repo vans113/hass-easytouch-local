@@ -13,6 +13,7 @@ from homeassistant.const import STATE_ON
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import issue_registry as ir
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import (
     async_call_later,
     async_track_state_change_event,
@@ -26,11 +27,10 @@ from .client import EasyTouchClient, EasyTouchError, ReadOnlyError
 from .const import (
     CLOCK_DRIFT_LIMIT,
     CLOCK_MIN_RESYNC,
-    CONF_EXTRA_CIRCUITS,
-    CONF_HIGH_SPEED_CIRCUIT,
-    CONF_POOL_CIRCUIT,
+    CONF_CIRCUIT_NAMES,
     CONF_POWER_ENTITY,
     CONF_POWER_THRESHOLD,
+    CONF_PUMP_CIRCUITS,
     CONF_READ_ONLY,
     CONF_SCHEDULE_ENABLED_ENTITY,
     CONF_SCHEDULE_MODE,
@@ -101,6 +101,16 @@ def parse_months(text: str) -> set[int]:
     return {m for m in months if 1 <= m <= 12}
 
 
+def parse_circuit_list(text: str) -> list[int]:
+    """'6, 2' -> [6, 2], in order, no duplicates."""
+    out: list[int] = []
+    for part in str(text).replace(";", ",").split(","):
+        part = part.strip()
+        if part.isdigit() and int(part) not in out and 1 <= int(part) <= 40:
+            out.append(int(part))
+    return out
+
+
 def parse_circuit_names(text: str) -> dict[int, str]:
     """'3:AUX 2, 4:Lights' -> {3: 'AUX 2', 4: 'Lights'}."""
     out: dict[int, str] = {}
@@ -129,7 +139,7 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
             config_entry=entry,
             name=f"{DOMAIN} {client.host}",
             update_interval=REFRESH_INTERVAL,
-            always_update=False,
+            always_update=True,  # the client only notifies on real changes
         )
         self.client = client
         self.schedule_sync = ScheduleSyncState()
@@ -137,8 +147,12 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
         self._unsubs: list[Callable[[], None]] = []
         self._schedule_timer: Callable[[], None] | None = None
         self._was_available = False
-        self._hs_changed_at = time.monotonic()
-        self._last_hs: bool | None = None
+        self._pump_changed_at = time.monotonic()
+        self._last_pump_relays: tuple[bool, ...] | None = None
+        self._known_circuits: set[int] = set()
+        self._resync_task: asyncio.Task[None] | None = None
+        self._resync_again = False
+        self._seen_connects = 0
         self._last_clock_sync = 0.0
         self.clock_drift: int | None = None
         self.suppress_reload = False  # set by the schedule-mode select
@@ -152,18 +166,39 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
         return self.config_entry.options.get(key, DEFAULT_OPTIONS[key])
 
     @property
-    def pool_circuit(self) -> int:
-        return int(self.opt(CONF_POOL_CIRCUIT))
+    def pump_circuits(self) -> list[int]:
+        """Circuits the pool pump switch turns on together, in order (off in reverse)."""
+        return parse_circuit_list(self.opt(CONF_PUMP_CIRCUITS)) or [6]
 
     @property
-    def high_speed_circuit(self) -> int:
-        return int(self.opt(CONF_HIGH_SPEED_CIRCUIT))
+    def new_circuits_signal(self) -> str:
+        return f"{DOMAIN}_{self.config_entry.entry_id}_new_circuits"
+
+    def circuit_ids(self) -> list[int]:
+        """Every circuit that gets a switch.
+
+        Circuits the controller reports as in use, the pump circuits, anything
+        named in the options, and anything seen switched on.
+        """
+        ids = {c for c, info in self.client.circuits.items() if info.in_use}
+        ids.update(self.pump_circuits)
+        ids.update(parse_circuit_names(self.opt(CONF_CIRCUIT_NAMES)))
+        if self.client.status is not None:
+            ids.update(c for c in self.client.status.circuits_on if c <= 18)
+        return sorted(ids)
+
+    def circuit_name(self, circuit: int) -> str:
+        override = parse_circuit_names(self.opt(CONF_CIRCUIT_NAMES)).get(circuit)
+        if override:
+            return override
+        info = self.client.circuits.get(circuit)
+        if info is not None and info.in_use:
+            return info.name(self.client.custom_names)
+        return {6: "Pool", 1: "Spa"}.get(circuit, f"Circuit {circuit}")
 
     @property
     def circuit_names(self) -> dict[int, str]:
-        names = {self.pool_circuit: "Pool", self.high_speed_circuit: "High speed"}
-        names.update(parse_circuit_names(self.opt(CONF_EXTRA_CIRCUITS)))
-        return names
+        return {c: self.circuit_name(c) for c in self.circuit_ids()}
 
     @property
     def read_only(self) -> bool:
@@ -237,10 +272,11 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
     def _handle_client_event(self) -> None:
         status = self.client.status
         if status is not None:
-            hs = status.is_on(self.high_speed_circuit)
-            if hs != self._last_hs:
-                self._last_hs = hs
-                self._hs_changed_at = time.monotonic()
+            relays = tuple(status.is_on(c) for c in self.pump_circuits)
+            if relays != self._last_pump_relays:
+                self._last_pump_relays = relays
+                self._pump_changed_at = time.monotonic()
+        self._check_new_circuits()
         self._check_transition()
         if self.client.available:
             self.async_set_updated_data(status)
@@ -250,27 +286,71 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
     @callback
     def _check_transition(self) -> None:
         available = self.client.available
+        connects = self.client.stats.connects
         if available and not self._was_available:
             self._was_available = True
+            self._seen_connects = connects
             LOGGER.info("EasyTouch status is flowing")
+            self._on_became_available()
+        elif available and connects != self._seen_connects:
+            # A quick reconnect that never made entities unavailable still
+            # gets the full re-read.
+            self._seen_connects = connects
             self._on_became_available()
         elif not available and self._was_available:
             self._was_available = False
             LOGGER.warning("EasyTouch went quiet; entities unavailable until it's back")
 
     @callback
+    def _check_new_circuits(self) -> None:
+        ids = set(self.circuit_ids())
+        if ids - self._known_circuits:
+            self._known_circuits |= ids
+            async_dispatcher_send(self.hass, self.new_circuits_signal)
+
+    @callback
+    def mark_circuits_known(self, ids: set[int]) -> None:
+        self._known_circuits |= ids
+
+    @callback
     def _on_became_available(self) -> None:
+        """The link is (back) up: re-read everything, like a reload but without one."""
         if self.read_only:
             self.schedule_sync.state = "listen_only"
             return
-        # Give the link a moment to settle before writing anything.
-        self._schedule_reconcile(RECONNECT_SETTLE, "link up")
 
         @callback
-        def clock_check(_: Any) -> None:
-            self._start_clock_job(force=False)
+        def start(_: Any) -> None:
+            if self._resync_task and not self._resync_task.done():
+                self._resync_again = True  # the running one may predate this reconnect
+                return
+            self._resync_task = self.config_entry.async_create_background_task(
+                self.hass, self._resync_loop(), "easytouch_local resync"
+            )
 
-        self._unsubs.append(async_call_later(self.hass, RECONNECT_SETTLE + 2, clock_check))
+        # Give the link a moment to settle before asking for anything.
+        self._unsubs.append(async_call_later(self.hass, RECONNECT_SETTLE, start))
+
+    async def _resync_loop(self) -> None:
+        reason = "link up"
+        while True:
+            self._resync_again = False
+            await self.async_full_resync(reason)
+            if not self._resync_again:
+                return
+            reason = "link up again"
+
+    async def async_full_resync(self, reason: str) -> None:
+        """Circuit setup, schedules and clock, in that order."""
+        LOGGER.info("EasyTouch %s: re-reading circuits, schedules and clock", reason)
+        try:
+            await self.client.read_circuits()
+        except EasyTouchError as err:
+            LOGGER.warning("Couldn't read the circuit setup: %s", err)
+        self._check_new_circuits()
+        self.async_update_listeners()
+        await self.async_reconcile_schedules(reason)
+        await self.async_check_clock()
 
     # ------------------------------------------------------------------ #
     # Pool pump
@@ -292,32 +372,30 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
             return None
 
     @property
-    def high_speed_on(self) -> bool:
+    def pump_relays_on(self) -> bool:
+        """Every pump circuit is on."""
         status = self.client.status
-        return bool(status and status.is_on(self.high_speed_circuit))
+        return bool(status and all(status.is_on(c) for c in self.pump_circuits))
 
     @property
     def pump_running(self) -> bool:
-        """The motor runs on the high-speed relay; power can veto a dead motor."""
-        if not self.high_speed_on:
+        """All pump circuits on; a live power reading can veto a motor that isn't turning."""
+        if not self.pump_relays_on:
             return False
         watts = self.power_reading()
         if watts is None:
             return True
-        settled = time.monotonic() - self._hs_changed_at > POWER_GRACE
+        settled = time.monotonic() - self._pump_changed_at > POWER_GRACE
         threshold = float(self.opt(CONF_POWER_THRESHOLD))
         return not (settled and watts < threshold)
 
     async def async_set_pump(self, on: bool) -> None:
-        """Pool + high speed together (the motor only runs on high speed)."""
+        """Every pump circuit, in order on and in reverse off."""
         self._guard_command()
+        circuits = self.pump_circuits if on else list(reversed(self.pump_circuits))
         try:
-            if on:
-                await self.client.set_circuit(self.pool_circuit, True)
-                await self.client.set_circuit(self.high_speed_circuit, True)
-            else:
-                await self.client.set_circuit(self.high_speed_circuit, False)
-                await self.client.set_circuit(self.pool_circuit, False)
+            for circuit in circuits:
+                await self.client.set_circuit(circuit, on)
         except ReadOnlyError as err:
             raise HomeAssistantError(str(err)) from err
         except EasyTouchError as err:
@@ -361,7 +439,7 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
                 raise ValueError(f"{enabled_entity} doesn't exist")
             if state.state != STATE_ON:
                 return []
-        circuits = (self.pool_circuit, self.high_speed_circuit)
+        circuits = self.pump_circuits
         now = _now()
         if now.month in parse_months(self.opt(CONF_SUMMER_MONTHS)):
             windows = [
