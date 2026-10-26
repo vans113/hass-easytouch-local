@@ -83,6 +83,14 @@ DESCRIPTIONS: tuple[EasyTouchSensorDescription, ...] = (
         value=lambda c: c.client.chlor.output_pct,
     ),
     EasyTouchSensorDescription(
+        key="super_chlor_hours_left",
+        translation_key="super_chlor_hours_left",
+        native_unit_of_measurement=UnitOfTime.HOURS,
+        device_class=SensorDeviceClass.DURATION,
+        icon="mdi:timer-sand",
+        value=lambda c: c.client.chlor.super_chlor_hours if c.client.chlor.present else None,
+    ),
+    EasyTouchSensorDescription(
         key="chlorinator_status",
         translation_key="chlorinator_status",
         icon="mdi:water-alert",

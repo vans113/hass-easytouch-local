@@ -94,7 +94,7 @@ class PoolPumpSwitch(EasyTouchEntity, SwitchEntity):
             },
             "relays_on": c.pump_relays_on,
             "motor_power_w": c.power_reading(),
-            "start_timer": bool(status and status.start_timer),
+            "high_speed_active": bool(status and status.high_speed_on),
         }
 
     async def async_turn_on(self, **kwargs: Any) -> None:

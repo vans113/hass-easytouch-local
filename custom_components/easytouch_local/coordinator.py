@@ -379,6 +379,15 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
             LOGGER.debug("Couldn't read the chlorinator setup: %s", err)
         self.async_update_listeners()
 
+    async def async_set_chlor_output(self, pct: int) -> None:
+        self._guard_command()
+        try:
+            await self.client.set_chlor_output(pct)
+        except EasyTouchError as err:
+            raise HomeAssistantError(f"Chlorinator output: {err}") from err
+        finally:
+            self._handle_client_event()
+
     async def async_set_super_chlorinate(self, on: bool) -> None:
         self._guard_command()
         try:

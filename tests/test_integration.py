@@ -524,3 +524,25 @@ async def test_super_chlorinate_not_confirmed(hass: HomeAssistant, fake: FakeEas
         await hass.services.async_call("switch", "turn_on", {"entity_id": eid}, blocking=True)
     assert hass.states.get(eid).state == STATE_OFF
     await _unload(hass, entry)
+
+
+async def test_chlorinator_output_keeps_super_chlorinate(hass: HomeAssistant, fake: FakeEasyTouch):
+    fake.state.super_hours = 5  # one already running
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    assert await _until(hass, lambda: _has(hass, "number", "chlorinator_setpoint"))
+    num = _eid(hass, "number", "chlorinator_setpoint")
+    left = _eid(hass, "sensor", "super_chlor_hours_left")
+    assert await _until(hass, lambda: hass.states.get(num).state == "50")
+    assert hass.states.get(left).state == "5"
+    await hass.services.async_call(
+        "number", "set_value", {"entity_id": num, "value": 30}, blocking=True
+    )
+    assert fake.state.chlor_pool == 30
+    assert fake.state.super_hours == 5  # not cancelled
+    assert hass.states.get(num).state == "30"
+    fake.drop_writes[Action.SET_CHLOR] = 10
+    with pytest.raises(HomeAssistantError, match="didn't take 60% output"):
+        await hass.services.async_call(
+            "number", "set_value", {"entity_id": num, "value": 60}, blocking=True
+        )
+    await _unload(hass, entry)

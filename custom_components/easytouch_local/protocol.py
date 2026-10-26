@@ -414,11 +414,11 @@ class Status:
         return bool(self.mode_byte & 0x08)
 
     @property
-    def start_timer(self) -> bool:
-        """Bit 3 of the delay byte: the controller's 5-minute high-speed start timer.
+    def high_speed_on(self) -> bool:
+        """Bit 3 of the delay byte: the pump's high-speed relay is energised.
 
-        Set at every pool start and cleared five minutes later, when the
-        controller drops the high-speed relay. njsPC doesn't decode it.
+        (Earlier versions called this a start timer; it stays set for as long
+        as High Speed is on.) njsPC doesn't decode it.
         """
         return bool(self.delay_byte & 0x08)
 

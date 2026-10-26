@@ -47,11 +47,11 @@ DESCRIPTIONS: tuple[EasyTouchBinaryDescription, ...] = (
         value=lambda c: c.client.status.freeze_protect if c.client.status else None,
     ),
     EasyTouchBinaryDescription(
-        key="start_timer",
-        translation_key="start_timer",
-        icon="mdi:timer-play-outline",
+        key="start_timer",  # kept so the existing entity carries over
+        translation_key="high_speed",
+        icon="mdi:speedometer",
         entity_category=EntityCategory.DIAGNOSTIC,
-        value=lambda c: c.client.status.start_timer if c.client.status else None,
+        value=lambda c: c.client.status.high_speed_on if c.client.status else None,
     ),
     EasyTouchBinaryDescription(
         key="water_sensor_fault",

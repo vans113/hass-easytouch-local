@@ -116,14 +116,14 @@
       "freeze_protect": {
         "name": "Freeze protection"
       },
-      "start_timer": {
-        "name": "Pump start timer"
-      },
       "water_sensor_fault": {
         "name": "Water temperature sensor"
       },
       "schedule_problem": {
         "name": "Schedule sync"
+      },
+      "high_speed": {
+        "name": "High speed active"
       }
     },
     "sensor": {
@@ -162,6 +162,9 @@
       },
       "delay_code": {
         "name": "Delay code"
+      },
+      "super_chlor_hours_left": {
+        "name": "Super chlorinate time left"
       }
     },
     "select": {
@@ -179,6 +182,11 @@
       },
       "sync_schedules": {
         "name": "Sync controller schedules"
+      }
+    },
+    "number": {
+      "chlorinator_setpoint": {
+        "name": "Chlorinator output"
       }
     }
   },

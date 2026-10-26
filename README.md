@@ -17,7 +17,9 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 | `binary_sensor.pool_controller_controller_link` | Fresh status is arriving from the controller |
 | `binary_sensor.pool_controller_schedule_sync` | Problem: the controller's schedules couldn't be made to match |
 | `binary_sensor.pool_controller_panel_service_mode` | Someone has the panel in Service/Timeout |
-| `binary_sensor.pool_controller_pump_start_timer` | The controller's 5-minute high-speed start timer (diagnostic) |
+| `binary_sensor.pool_controller_high_speed_active` | The pump's high-speed relay is on (status byte 12, bit 3; diagnostic) |
+| `number.pool_controller_chlorinator_output` | IntelliChlor pool output %, as set on the panel. Changing it leaves a running super-chlorinate alone; confirmed by reading back. |
+| `sensor.pool_controller_super_chlorinate_time_left` | Hours of super-chlorinate left (0 when not running) |
 | `binary_sensor.pool_controller_freeze_protection`, `..._water_temperature_sensor` | Freeze mode; water sensor fault (open/unplugged) |
 | `sensor.pool_controller_water_temperature`, `..._air_temperature` | Temperatures (water shows unknown while its sensor is faulted) |
 | `sensor.pool_controller_salt_level`, `..._chlorinator_output`, `..._chlorinator_status` | IntelliChlor salt, output % and flags (low flow, low salt, …) |
@@ -28,7 +30,7 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 
 ## Pump circuits
 
-Most pools run the pump from the **Pool** circuit (6), and that's the default. Some need more than one circuit on at once. On a two-speed pump wired only to the **High Speed** relay, for example, the EasyTouch holds high speed for its 5-minute start timer after Pool turns on and then drops it, expecting the motor to carry on at low speed. With nothing on low speed the motor stops. Setting the pump circuits to `6, 2` (Pool, then High Speed) keeps it running. The start timer shows up in the status broadcast (byte 12, bit 3), which njsPC doesn't decode; this integration exposes it as `pump_start_timer`.
+Most pools run the pump from the **Pool** circuit (6), and that's the default. Some need more than one circuit on at once. On a two-speed pump wired only to the **High Speed** relay, for example, the EasyTouch holds high speed for its 5-minute start timer after Pool turns on and then drops it, expecting the motor to carry on at low speed. With nothing on low speed the motor stops. Setting the pump circuits to `6, 2` (Pool, then High Speed) keeps it running. Whether high speed is on shows up in the status broadcast (byte 12, bit 3), which njsPC doesn't decode; this integration exposes it as `high_speed_active`.
 
 In Controller schedule mode every pump circuit gets its own schedule entry at the same times.
 

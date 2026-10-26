@@ -61,7 +61,7 @@ def test_decode_real_status_frame():
     assert (s.hour, s.minute) == (13, 8)
     assert s.circuits_on == {6}
     assert s.is_on(6) and not s.is_on(2)
-    assert s.start_timer  # 0x08 in byte 12: the 5-minute high-speed timer
+    assert s.high_speed_on  # 0x08 in byte 12: high-speed relay on
     assert s.panel_mode == "auto" and not s.service_mode
     assert s.water_sensor_fault and s.water_temp is None
     assert s.air_temp == 91

@@ -684,6 +684,27 @@ class EasyTouchClient:
                 f"the controller didn't {'start' if on else 'stop'} super-chlorinate"
             )
 
+    async def set_chlor_output(self, pct: int) -> None:
+        """Set the pool output %, keeping any super-chlorinate running; read back to confirm."""
+        async with self._cmd_lock:
+            await self._read_chlorinator()
+            if not self.chlor.present:
+                raise CommandNotConfirmedError("the controller has no chlorinator set up")
+            for attempt in range(1, self.timing.attempts + 1):
+                if attempt > 1:
+                    self.stats.commands_retried += 1
+                payload = cmd_set_chlor(
+                    pct, self.chlor.spa_setpoint or 0, self.chlor.super_chlor_hours
+                )
+                ack = self._expect(self._ack_for(Action.SET_CHLOR))
+                await self._send_or_drop(ack, Action.SET_CHLOR, payload)
+                await self._await(ack, self.timing.ack_timeout)
+                await self._read_chlorinator()
+                if self.chlor.pool_setpoint == pct:
+                    return
+            self.stats.commands_failed += 1
+            raise CommandNotConfirmedError(f"the controller didn't take {pct}% output")
+
     async def write_schedule(self, slot: int, wanted: WantedSchedule | None) -> ScheduleSlot:
         """Write (or clear) a slot, then read it back from the controller to prove it stuck."""
         async with self._cmd_lock:
