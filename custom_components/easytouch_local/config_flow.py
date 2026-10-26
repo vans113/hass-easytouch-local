@@ -234,6 +234,13 @@ class EasyTouchOptionsFlow(OptionsFlow):
             if coordinator is not None
             else ""
         ) or "none yet"
+        pump_now = (
+            " + ".join(
+                f"{coordinator.circuit_name(cid)} ({cid})" for cid in coordinator.pump_circuits
+            )
+            if coordinator is not None
+            else current[CONF_PUMP_CIRCUITS]
+        )
         entity = selector.EntitySelector
         schema = vol.Schema(
             {
@@ -277,5 +284,5 @@ class EasyTouchOptionsFlow(OptionsFlow):
             step_id="init",
             data_schema=schema,
             errors=errors,
-            description_placeholders={"circuits": found},
+            description_placeholders={"circuits": found, "pump": pump_now},
         )

@@ -78,7 +78,17 @@ class PoolPumpSwitch(EasyTouchEntity, SwitchEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         c = self.coordinator
         status = self.status
+        names = [c.circuit_name(cid) for cid in c.pump_circuits]
         return {
+            # Plain-language summary of what this switch does on this pool.
+            "controls": " + ".join(names),
+            "description": (
+                f"Turns on {' then '.join(names)} together and off in reverse. "
+                "Set in the integration options under Pump circuits."
+                if len(names) > 1
+                else f"Turns {names[0]} on and off. Set in the integration options "
+                "under Pump circuits."
+            ),
             "circuits": {
                 c.circuit_name(cid): bool(status and status.is_on(cid)) for cid in c.pump_circuits
             },

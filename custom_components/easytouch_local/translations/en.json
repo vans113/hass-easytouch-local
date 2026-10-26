@@ -68,7 +68,7 @@
           "winter_start": "Winter start",
           "winter_stop": "Winter stop",
           "source_addr": "RS-485 address to send from",
-          "pump_circuits": "Circuits the pool pump switch turns on together",
+          "pump_circuits": "Pump circuits (what the Pool pump switch turns on)",
           "circuit_names": "Rename circuits"
         },
         "data_description": {
@@ -76,10 +76,10 @@
           "power_entity": "Optional. When it's reporting, a high-speed relay that's on with no motor draw shows the pool pump as off.",
           "summer_months": "Months that use the summer weekday/weekend times, e.g. 4-10",
           "source_addr": "Leave at 33 unless another remote uses it.",
-          "pump_circuits": "Circuit numbers in the order to turn on (off goes in reverse). Usually just 6 (Pool). A two-speed pump wired to the high-speed relay needs Pool and High Speed, e.g. 6, 2.",
+          "pump_circuits": "The Pool pump switch is made by this integration and switches these circuits as one: on in this order, off in reverse. Usually just 6 (Pool). A two-speed pump wired to the high-speed relay needs Pool and High Speed (6, 2), or the panel drops it after its 5-minute start timer.",
           "circuit_names": "Optional number:name pairs to override the panel's names, e.g. 2:Pump High Speed, 3:Lights"
         },
-        "description": "Circuits found on the controller: {circuits}"
+        "description": "The Pool pump switch currently turns on: {pump}.\n\nCircuits found on the controller: {circuits}"
       }
     },
     "error": {
