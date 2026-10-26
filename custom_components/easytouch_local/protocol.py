@@ -24,6 +24,9 @@ PREAMBLE = b"\xff\x00\xff"
 CONTROLLER_ADDR = 16  # the EasyTouch itself
 BROADCAST_ADDR = 15
 DEFAULT_SOURCE_ADDR = 33  # remote/plugin slot; njsPC's default too
+# Second header byte. The controller ignores commands whose byte doesn't match
+# the one in its own broadcasts (EasyTouch2 sends 0x01), so the client copies it
+# from status frames, as njsPC does; this is only the fallback before any arrive.
 OUT_SUB_BYTE = 33
 MAX_PAYLOAD = 64
 
@@ -229,10 +232,13 @@ class ChlorPacket:
 
 
 def build_command(
-    action: int, payload: bytes | list[int], source: int = DEFAULT_SOURCE_ADDR
+    action: int,
+    payload: bytes | list[int],
+    source: int = DEFAULT_SOURCE_ADDR,
+    sub: int = OUT_SUB_BYTE,
 ) -> bytes:
     """Frame a command addressed to the controller."""
-    return Packet(OUT_SUB_BYTE, CONTROLLER_ADDR, source, action, bytes(payload)).to_bytes()
+    return Packet(sub, CONTROLLER_ADDR, source, action, bytes(payload)).to_bytes()
 
 
 class FrameParser:

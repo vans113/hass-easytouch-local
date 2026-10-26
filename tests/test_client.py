@@ -132,3 +132,11 @@ async def test_read_all_schedules_sees_egg_timers(client):
 async def test_set_clock_confirmed(client, fake):
     await client.set_clock(datetime(2026, 10, 26, 3, 0))
     assert (fake.state.hour, fake.state.minute) == (3, 0)
+
+
+async def test_copies_header_byte_from_controller(client, fake):
+    """The panel ignores commands whose header byte differs from its broadcasts."""
+    assert client.sub_byte == 1
+    await client.set_circuit(6, True)
+    assert 6 in fake.state.circuits
+    assert not fake.wrong_header

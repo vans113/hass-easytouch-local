@@ -34,6 +34,7 @@ from .protocol import (
     DEFAULT_SOURCE_ADDR,
     MAX_CIRCUIT_ID,
     MAX_SCHEDULE_SLOTS,
+    OUT_SUB_BYTE,
     Action,
     ChlorPacket,
     ChlorState,
@@ -139,6 +140,7 @@ class EasyTouchClient:
         self.listen = listen
         self.source_addr = source_addr
         self.read_only = read_only
+        self.sub_byte = OUT_SUB_BYTE  # replaced by the controller's own on first status
         self.timing = timing or Timing()
         self.stats = LinkStats()
 
@@ -402,6 +404,9 @@ class EasyTouchClient:
             self._last_frame_at = time.monotonic()
         changed = False
         if frame.action == Action.STATUS and frame.source == CONTROLLER_ADDR:
+            if frame.sub != self.sub_byte:
+                _LOGGER.debug("Using header byte %s from the controller's broadcasts", frame.sub)
+                self.sub_byte = frame.sub
             status = decode_status(frame.payload)
             if status is not None:
                 changed = self.status is None or status.raw != self.status.raw or not self.available
@@ -463,7 +468,7 @@ class EasyTouchClient:
             await asyncio.sleep(self.timing.bus_quiet / 2)
         self._check_can_send()
         assert self._writer is not None
-        self._writer.write(build_command(action, payload, self.source_addr))
+        self._writer.write(build_command(action, payload, self.source_addr, self.sub_byte))
         await self._writer.drain()
         self._last_cmd_at = time.monotonic()
         self.stats.commands_sent += 1
@@ -683,6 +688,7 @@ class EasyTouchClient:
             "connected": self.connected,
             "available": self.available,
             "read_only": self.read_only,
+            "header_byte": self.sub_byte,
             "mode": "listen" if self.listen else "connect",
             "peer": self.peer,
             "circuits": {k: str(v) for k, v in sorted(self.circuits.items())},

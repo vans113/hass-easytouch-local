@@ -61,6 +61,7 @@ class FakeEasyTouch:
         self.port = 0
         self.clients: list[asyncio.StreamWriter] = []
         self.received: list[Packet] = []
+        self.wrong_header: list[Packet] = []
         self.silent = False  # stop broadcasting but keep sockets open
         self.drop_writes: dict[int, int] = {}  # action -> number of writes to ignore
         self.ack = True
@@ -165,6 +166,11 @@ class FakeEasyTouch:
                     break
                 for frame in parser.feed(data):
                     if isinstance(frame, Packet) and frame.dest == 16:
+                        if frame.sub != 1:
+                            # The real panel ignores a header byte that doesn't
+                            # match its own broadcasts.
+                            self.wrong_header.append(frame)
+                            continue
                         self.received.append(frame)
                         await self._handle(frame)
         except (ConnectionError, OSError):
