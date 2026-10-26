@@ -471,3 +471,27 @@ async def test_config_flow_listen_before_bridge_is_pointed(hass: HomeAssistant):
     assert entry.state is ConfigEntryState.LOADED
     assert hass.states.get(_eid(hass, "sensor", "air_temp")).state == STATE_UNAVAILABLE
     await _unload(hass, entry)
+
+
+async def test_circuits_missing_on_this_model_are_hidden(hass: HomeAssistant, fake: FakeEasyTouch):
+    """A 4P panel has no spa (circuit 1, still named "Pool") and no AUX 5-7."""
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    fake.state.circuit_config[1] = (2, 61)  # named "Pool" like Michael's panel
+    fake.state.circuit_config[7] = (0, 43)
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    coordinator = entry.runtime_data
+    assert await _until(hass, lambda: _has(hass, "switch", "circuit_3"))
+    assert not _has(hass, "switch", "circuit_1")
+    assert not _has(hass, "switch", "circuit_7")
+    assert _has(hass, "switch", "circuit_6")
+
+    # A switch left behind by an older version is cleaned up.
+    registry = er.async_get(hass)
+    stale = registry.async_get_or_create(
+        "switch", DOMAIN, f"{coordinator.unique_id}_circuit_1", config_entry=entry
+    )
+    async_dispatcher_send(hass, coordinator.new_circuits_signal)
+    await hass.async_block_till_done()
+    assert registry.async_get(stale.entity_id) is None
+    await _unload(hass, entry)

@@ -22,6 +22,8 @@ async def async_get_config_entry_diagnostics(
             "last_success": str(c.schedule_sync.last_success),
         },
         "clock_drift_min": c.clock_drift,
+        "panel_model": str(c.client.status.model) if c.client.status else None,
+        "missing_circuits": sorted(c.missing_circuits()),
         "pump": {
             "running": c.pump_running,
             "pump_circuits": c.pump_circuits,

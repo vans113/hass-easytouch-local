@@ -185,7 +185,17 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
         ids.update(parse_circuit_names(self.opt(CONF_CIRCUIT_NAMES)))
         if self.client.status is not None:
             ids.update(c for c in self.client.status.circuits_on if c <= 18)
+        ids -= self.missing_circuits()
         return sorted(ids)
+
+    def missing_circuits(self) -> set[int]:
+        """Circuits this panel model doesn't have (unless the user names them)."""
+        status = self.client.status
+        model = status.model if status is not None else None
+        if model is None:
+            return set()
+        keep = set(self.pump_circuits) | set(parse_circuit_names(self.opt(CONF_CIRCUIT_NAMES)))
+        return set(model.missing_circuits) - keep
 
     def circuit_name(self, circuit: int) -> str:
         override = parse_circuit_names(self.opt(CONF_CIRCUIT_NAMES)).get(circuit)

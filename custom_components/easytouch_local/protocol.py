@@ -329,6 +329,50 @@ def _find_controller_start(buf: bytearray) -> int:
 # --------------------------------------------------------------------------- #
 # Decoded state
 # --------------------------------------------------------------------------- #
+@dataclass(frozen=True, slots=True)
+class ControllerModel:
+    """Personality board, from status bytes 27-28 (the same table njsPC uses)."""
+
+    name: str
+    relays: int  # aux relays: 4 or 8
+    single_body: bool  # pool-only "P" models have no spa circuit
+
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def missing_circuits(self) -> frozenset[int]:
+        """Circuit numbers that don't exist on this panel."""
+        missing: set[int] = set()
+        if self.single_body:
+            missing.add(1)  # the spa circuit; P models still name it "Pool"
+        if self.relays == 4:
+            missing.update((7, 8, 9))  # AUX 5-7
+        return frozenset(missing)
+
+
+# byte 28 = 13 (EasyTouch2) or 14 (EasyTouch); byte 27 = model within the family.
+_EASYTOUCH_MODELS = {
+    0: ("EasyTouch2 8", 8, False),
+    1: ("EasyTouch2 8P", 8, True),
+    2: ("EasyTouch2 4", 4, False),
+    3: ("EasyTouch2 4P", 4, True),
+    6: ("EasyTouch PSL4", 4, False),
+    7: ("EasyTouch PL4", 4, True),
+    128: ("EasyTouch 8", 8, False),
+    129: ("EasyTouch 8P", 8, True),
+    130: ("EasyTouch 4", 4, False),
+    131: ("EasyTouch 4P", 4, True),
+}
+
+
+def decode_model(byte27: int, byte28: int) -> ControllerModel | None:
+    if byte28 not in (13, 14):
+        return None
+    found = _EASYTOUCH_MODELS.get((128 if byte28 == 14 else 0) + byte27)
+    return ControllerModel(*found) if found else None
+
+
 @dataclass(slots=True)
 class Status:
     """The controller's status broadcast (action 2)."""
@@ -343,6 +387,12 @@ class Status:
     water_raw: int
     air_raw: int
     raw: bytes
+
+    @property
+    def model(self) -> ControllerModel | None:
+        if len(self.raw) < 29:
+            return None
+        return decode_model(self.raw[27], self.raw[28])
 
     @property
     def panel_mode(self) -> str:

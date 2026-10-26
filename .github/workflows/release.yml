@@ -1,8 +1,13 @@
 name: Release
 
+# Publishes a release whenever the manifest version on main has no release yet
+# (or when a v* tag is pushed by hand). Published, not draft, so HACS sees it.
 on:
   push:
+    branches: [main]
+    paths: ["custom_components/easytouch_local/manifest.json"]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,12 +17,30 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check manifest version matches tag
-        run: |
-          tag="${GITHUB_REF_NAME#v}"
-          ver=$(python3 -c "import json;print(json.load(open('custom_components/easytouch_local/manifest.json'))['version'])")
-          [ "$tag" = "$ver" ] || { echo "Tag $tag != manifest $ver"; exit 1; }
-      # Published (not draft) so HACS can see it immediately.
-      - uses: softprops/action-gh-release@v2
         with:
+          fetch-depth: 0
+      - name: Read manifest version
+        id: ver
+        run: |
+          ver=$(python3 -c "import json;print(json.load(open('custom_components/easytouch_local/manifest.json'))['version'])")
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$ver" ]; then
+            echo "Tag ${GITHUB_REF_NAME} != manifest v$ver"; exit 1
+          fi
+      - name: Skip if already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${{ steps.ver.outputs.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: softprops/action-gh-release@v2
+        if: steps.check.outputs.exists == 'false'
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.ver.outputs.tag }}
           generate_release_notes: true

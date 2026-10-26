@@ -134,3 +134,13 @@ def test_plan_empty_when_in_sync_and_clears_everything_for_no_schedules():
     assert plan_schedules(current, [WantedSchedule(6, 540, 775, WEEKDAYS)]).empty
     plan = plan_schedules(current, [])
     assert plan.clears == [3] and not plan.writes
+
+
+def test_model_from_status():
+    from custom_components.easytouch_local.protocol import decode_model
+
+    m = decode_status(REAL_STATUS).model
+    assert m is not None and m.name == "EasyTouch2 4P"
+    assert m.missing_circuits == {1, 7, 8, 9}
+    assert decode_model(0, 13).missing_circuits == frozenset()
+    assert decode_model(2, 99) is None

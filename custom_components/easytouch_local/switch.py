@@ -6,10 +6,12 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import EasyTouchConfigEntry
+from .const import DOMAIN
 from .coordinator import EasyTouchCoordinator
 from .entity import EasyTouchEntity
 
@@ -25,6 +27,7 @@ async def async_setup_entry(
     @callback
     def add_circuits() -> None:
         """Add a switch for every circuit we know about and haven't added yet."""
+        _remove_missing(hass, coordinator)
         new = [c for c in coordinator.circuit_ids() if c not in added]
         added.update(new)
         coordinator.mark_circuits_known(set(new))
@@ -37,6 +40,19 @@ async def async_setup_entry(
     entry.async_on_unload(
         async_dispatcher_connect(hass, coordinator.new_circuits_signal, add_circuits)
     )
+
+
+@callback
+def _remove_missing(hass: HomeAssistant, coordinator: EasyTouchCoordinator) -> None:
+    """Drop switches for circuits this panel model doesn't have.
+
+    Older versions created them before the model was known.
+    """
+    registry = er.async_get(hass)
+    for circuit in coordinator.missing_circuits():
+        unique_id = f"{coordinator.unique_id}_circuit_{circuit}"
+        if entity_id := registry.async_get_entity_id("switch", DOMAIN, unique_id):
+            registry.async_remove(entity_id)
 
 
 class PoolPumpSwitch(EasyTouchEntity, SwitchEntity):
