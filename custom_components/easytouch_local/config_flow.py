@@ -46,13 +46,17 @@ PROBE_WAIT = 10.0
 PORT_FIELD = vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))
 
 
+async def _check_port_free(host: str, port: int) -> None:
+    """Raise OSError if something else already listens on the port."""
+    server = await asyncio.start_server(lambda r, w: w.close(), host, port, reuse_address=True)
+    server.close()
+    await server.wait_closed()
+
+
 async def _probe(host: str, port: int, listen: bool) -> bool:
     """Listen (never send) until a status broadcast arrives."""
     if listen:
-        # Fail fast if something else already has the port.
-        server = await asyncio.start_server(lambda r, w: w.close(), host, port, reuse_address=True)
-        server.close()
-        await server.wait_closed()
+        await _check_port_free(host, port)  # fail fast if the port is taken
     client = EasyTouchClient(host, port, read_only=True, listen=listen)
     client.start()
     try:
@@ -130,7 +134,13 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(unique)
         self._abort_if_unique_id_configured()
         try:
-            ok = await _probe(host, port, connection == CONNECTION_LISTEN)
+            if connection == CONNECTION_LISTEN:
+                # The bridge may not be pointed here yet; just make sure the port
+                # is free. Entities stay unavailable until it dials in.
+                await _check_port_free(host, port)
+                ok = True
+            else:
+                ok = await _probe(host, port, False)
         except OSError:
             errors["base"] = "port_in_use"
             ok = False

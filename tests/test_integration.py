@@ -449,3 +449,25 @@ async def test_quick_reconnect_also_re_reads(hass: HomeAssistant, fake: FakeEasy
     await fake.kick_clients()  # bridge drops and comes straight back
     assert await _until(hass, lambda: len(fake.commands(Action.GET_CIRCUIT)) >= before + 18, 6)
     await _unload(hass, entry)
+
+
+async def test_config_flow_listen_before_bridge_is_pointed(hass: HomeAssistant):
+    """Listen mode can be set up before the bridge dials in."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    result = await hass.config_entries.flow.async_init(DOMAIN, context={"source": "user"})
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"next_step_id": "listen"}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PORT: port, CONF_READ_ONLY: True}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.state is ConfigEntryState.LOADED
+    assert hass.states.get(_eid(hass, "sensor", "air_temp")).state == STATE_UNAVAILABLE
+    await _unload(hass, entry)

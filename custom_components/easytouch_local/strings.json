@@ -23,7 +23,7 @@
       },
       "listen": {
         "title": "Let the bridge connect",
-        "description": "Point the bridge's TCP client at this Home Assistant's IP address and the port below. Setup waits up to a minute for it to dial in.",
+        "description": "Point the bridge's TCP client (for example the EW11's Socket B) at this Home Assistant's IP address and the port below. The bridge doesn't need to be connected yet: the entities stay unavailable until it dials in.",
         "data": {
           "port": "Port to listen on",
           "read_only": "Listen only (never send anything to the controller)"
