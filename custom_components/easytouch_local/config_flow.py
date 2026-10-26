@@ -28,6 +28,7 @@ from .const import (
     CONF_SCHEDULE_MODE,
     CONF_SOURCE_ADDR,
     CONF_SUMMER_MONTHS,
+    CONF_SUPER_CHLOR_HOURS,
     CONNECTION_CONNECT,
     CONNECTION_LISTEN,
     DEFAULT_OPTIONS,
@@ -275,6 +276,9 @@ class EasyTouchOptionsFlow(OptionsFlow):
                     ): entity(selector.EntitySelectorConfig(domain=["input_datetime", "time"]))
                     for key in TIME_HELPER_KEYS
                 },
+                vol.Required(
+                    CONF_SUPER_CHLOR_HOURS, default=current[CONF_SUPER_CHLOR_HOURS]
+                ): vol.All(vol.Coerce(int), vol.Range(min=1, max=96)),
                 vol.Required(CONF_SOURCE_ADDR, default=current[CONF_SOURCE_ADDR]): vol.All(
                     vol.Coerce(int), vol.Range(min=32, max=47)
                 ),

@@ -34,6 +34,7 @@ CONF_SUMMER_WEEKEND_START = "summer_weekend_start"
 CONF_SUMMER_WEEKEND_STOP = "summer_weekend_stop"
 CONF_WINTER_START = "winter_start"
 CONF_WINTER_STOP = "winter_stop"
+CONF_SUPER_CHLOR_HOURS = "super_chlor_hours"
 
 SCHEDULE_MODE_HA = "home_assistant"
 SCHEDULE_MODE_CONTROLLER = "controller"
@@ -64,6 +65,7 @@ DEFAULT_OPTIONS: dict = {
     CONF_SUMMER_WEEKEND_STOP: "input_datetime.pool_summer_weekend_stop",
     CONF_WINTER_START: "input_datetime.pool_winter_start",
     CONF_WINTER_STOP: "input_datetime.pool_winter_stop",
+    CONF_SUPER_CHLOR_HOURS: 8,
 }
 
 # Timing
@@ -71,6 +73,7 @@ REFRESH_INTERVAL = timedelta(seconds=5)  # cheap: just re-checks link health
 SETUP_WAIT = 10.0  # seconds to wait for the first status at startup
 PROBE_WAIT_LISTEN = 60.0  # a bridge in client mode may take a while to dial in
 SCHEDULE_CHECK_INTERVAL = timedelta(minutes=30)
+CHLOR_POLL_INTERVAL = timedelta(minutes=5)  # super-chlorinate hours left, setpoints
 SCHEDULE_RETRY_DELAY = 300.0  # seconds after a failed schedule sync
 SCHEDULE_DEBOUNCE = 5.0  # seconds after a helper change
 RECONNECT_SETTLE = 10.0  # seconds after the link comes back before writing

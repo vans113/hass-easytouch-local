@@ -167,9 +167,11 @@ class Action(IntEnum):
     SET_CLOCK = 133
     SET_CIRCUIT = 134
     SET_SCHEDULE = 145
+    SET_CHLOR = 153
     GET_CUSTOM_NAME = 202
     GET_CIRCUIT = 203
     GET_SCHEDULE = 209
+    GET_CHLOR = 217
 
 
 class PanelMode(IntEnum):
@@ -567,6 +569,11 @@ class ChlorState:
     salt_ppm: int | None = None
     status_byte: int | None = None
     output_pct: int | None = None
+    # From the controller's chlorinator config (action 25):
+    present: bool = False
+    pool_setpoint: int | None = None
+    spa_setpoint: int | None = None
+    super_chlor_hours: int = 0  # hours left; 0 = not super-chlorinating
 
     @property
     def problems(self) -> list[str]:
@@ -579,6 +586,11 @@ def decode_chlor_status(payload: bytes, chlor: ChlorState) -> None:
     """Controller's chlorinator summary (action 25)."""
     if len(payload) < 5 or not payload[0] & 0x01:
         return
+    chlor.present = True
+    chlor.spa_setpoint = payload[0] >> 1
+    chlor.pool_setpoint = payload[1]
+    if len(payload) > 5:
+        chlor.super_chlor_hours = payload[5]
     if payload[3]:
         chlor.salt_ppm = payload[3] * 50
     chlor.status_byte = payload[4] & 0x7F
@@ -614,6 +626,24 @@ def cmd_set_schedule(slot: int, wanted: WantedSchedule | None) -> bytes:
             wanted.end // 60,
             wanted.end % 60,
             wanted.days & 0x7F,
+        ]
+    )
+
+
+def cmd_set_chlor(pool_setpoint: int, spa_setpoint: int, super_hours: int) -> bytes:
+    """Action 153: keep the output setpoints, start (hours > 0) or stop super-chlorinate."""
+    return bytes(
+        [
+            (spa_setpoint << 1) + 1,
+            pool_setpoint,
+            super_hours + 128 if super_hours > 0 else 0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ]
     )
 

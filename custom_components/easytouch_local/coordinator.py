@@ -25,6 +25,7 @@ from homeassistant.util import dt as dt_util
 
 from .client import EasyTouchClient, EasyTouchError, ReadOnlyError
 from .const import (
+    CHLOR_POLL_INTERVAL,
     CLOCK_DRIFT_LIMIT,
     CLOCK_MIN_RESYNC,
     CONF_CIRCUIT_NAMES,
@@ -39,6 +40,7 @@ from .const import (
     CONF_SUMMER_WEEKDAY_STOP,
     CONF_SUMMER_WEEKEND_START,
     CONF_SUMMER_WEEKEND_STOP,
+    CONF_SUPER_CHLOR_HOURS,
     CONF_WINTER_START,
     CONF_WINTER_STOP,
     DEFAULT_OPTIONS,
@@ -239,6 +241,9 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
             async_track_time_change(self.hass, self._nightly_clock, hour=3, minute=0, second=5)
         )
         self._unsubs.append(async_track_time_change(self.hass, self._minute_tick, second=20))
+        self._unsubs.append(
+            async_track_time_interval(self.hass, self._chlor_poll, CHLOR_POLL_INTERVAL)
+        )
         watched = [self.opt(k) for k in (*TIME_HELPER_KEYS, CONF_SCHEDULE_ENABLED_ENTITY)]
         watched = [e for e in watched if e]
         if watched:
@@ -361,6 +366,27 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
         self.async_update_listeners()
         await self.async_reconcile_schedules(reason)
         await self.async_check_clock()
+        await self._read_chlorinator()
+
+    async def _chlor_poll(self, _now=None) -> None:
+        if self.client.available and not self.read_only:
+            await self._read_chlorinator()
+
+    async def _read_chlorinator(self) -> None:
+        try:
+            await self.client.read_chlorinator()
+        except EasyTouchError as err:
+            LOGGER.debug("Couldn't read the chlorinator setup: %s", err)
+        self.async_update_listeners()
+
+    async def async_set_super_chlorinate(self, on: bool) -> None:
+        self._guard_command()
+        try:
+            await self.client.set_super_chlorinate(on, int(self.opt(CONF_SUPER_CHLOR_HOURS)))
+        except EasyTouchError as err:
+            raise HomeAssistantError(f"Super chlorinate: {err}") from err
+        finally:
+            self._handle_client_event()
 
     # ------------------------------------------------------------------ #
     # Pool pump

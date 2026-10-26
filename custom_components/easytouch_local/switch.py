@@ -34,7 +34,7 @@ async def async_setup_entry(
         if new:
             async_add_entities(CircuitSwitch(coordinator, c) for c in new)
 
-    async_add_entities([PoolPumpSwitch(coordinator)])
+    async_add_entities([PoolPumpSwitch(coordinator), SuperChlorinateSwitch(coordinator)])
     add_circuits()
     # Circuits found later (circuit setup read after a reconnect) appear on the fly.
     entry.async_on_unload(
@@ -136,3 +136,39 @@ class CircuitSwitch(EasyTouchEntity, SwitchEntity):
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_circuit(self.circuit, False)
+
+
+class SuperChlorinateSwitch(EasyTouchEntity, SwitchEntity):
+    """IntelliChlor super-chlorinate, run by the controller.
+
+    On starts it for the hours set in the options (the EasyTouch keeps the
+    pump on for that long); off cancels it. Read back from the controller.
+    """
+
+    _attr_translation_key = "super_chlorinate"
+    _attr_icon = "mdi:flash-alert"
+
+    def __init__(self, coordinator: EasyTouchCoordinator) -> None:
+        super().__init__(coordinator, "super_chlorinate")
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.coordinator.client.chlor.present
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.client.chlor.super_chlor_hours > 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        chlor = self.coordinator.client.chlor
+        return {
+            "hours_left": chlor.super_chlor_hours,
+            "pool_setpoint_pct": chlor.pool_setpoint,
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_super_chlorinate(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_super_chlorinate(False)

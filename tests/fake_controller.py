@@ -45,6 +45,9 @@ class FakeState:
         }
     )
     custom_names: dict[int, str] = field(default_factory=lambda: {1: "Waterfall"})
+    chlor_pool: int = 50
+    chlor_spa: int = 10
+    super_hours: int = 0
     schedules: dict[int, bytes] = field(
         default_factory=lambda: {
             7: bytes([7, 2, 25, 0, 12, 0, 0]),  # egg timer, circuit 2, 12 h
@@ -199,6 +202,14 @@ class FakeEasyTouch:
                 s.schedules.pop(slot, None)
             else:
                 s.schedules[slot] = bytes(pkt.payload[:7])
+        elif pkt.action == Action.SET_CHLOR:
+            s.chlor_spa = pkt.payload[0] >> 1
+            s.chlor_pool = pkt.payload[1]
+            s.super_hours = pkt.payload[2] - 128 if pkt.payload[2] & 0x80 else 0
+        elif pkt.action == Action.GET_CHLOR:
+            name = b"Intellichlor--40"
+            body = bytes([(s.chlor_spa << 1) | 1, s.chlor_pool, 0, 56, 0x80, s.super_hours]) + name
+            reply = self._frame(Action.CHLOR_STATUS, body)
         elif pkt.action == Action.SET_CLOCK:
             s.hour, s.minute = pkt.payload[0], pkt.payload[1]
         elif pkt.action == Action.GET_CIRCUIT:
@@ -217,6 +228,7 @@ class FakeEasyTouch:
             Action.GET_SCHEDULE,
             Action.GET_CIRCUIT,
             Action.GET_CUSTOM_NAME,
+            Action.GET_CHLOR,
         ):
             reply = Packet(1, pkt.source, 16, Action.ACK, bytes([pkt.action])).to_bytes() + reply
         if reply:

@@ -46,6 +46,7 @@ from .protocol import (
     WantedSchedule,
     build_command,
     cmd_get_schedule,
+    cmd_set_chlor,
     cmd_set_circuit,
     cmd_set_clock,
     cmd_set_schedule,
@@ -429,9 +430,13 @@ class EasyTouchClient:
                 changed = self.custom_names.get(named[0]) != named[1]
                 self.custom_names[named[0]] = named[1]
         elif frame.action == Action.CHLOR_STATUS and frame.source == CONTROLLER_ADDR:
-            before = (self.chlor.salt_ppm, self.chlor.status_byte)
+            before = (self.chlor.salt_ppm, self.chlor.status_byte, self.chlor.super_chlor_hours)
             decode_chlor_status(frame.payload, self.chlor)
-            changed = before != (self.chlor.salt_ppm, self.chlor.status_byte)
+            changed = before != (
+                self.chlor.salt_ppm,
+                self.chlor.status_byte,
+                self.chlor.super_chlor_hours,
+            )
         for waiter in list(self._waiters):
             if not waiter.future.done() and waiter.match(frame):
                 waiter.future.set_result(frame)
@@ -638,6 +643,46 @@ class EasyTouchClient:
         raise CommandNotConfirmedError(
             f"the controller didn't answer request {action} {payload.hex()}"
         )
+
+    async def read_chlorinator(self) -> ChlorState:
+        """Ask the controller for its chlorinator setup (setpoints, super-chlorinate)."""
+        async with self._cmd_lock:
+            return await self._read_chlorinator()
+
+    async def _read_chlorinator(self) -> ChlorState:
+        await self._request(
+            Action.GET_CHLOR,
+            b"\x00",
+            lambda p: p.action == Action.CHLOR_STATUS and p.source == CONTROLLER_ADDR,
+        )
+        self._notify()
+        return self.chlor
+
+    async def set_super_chlorinate(self, on: bool, hours: int = 8) -> None:
+        """Start or stop super-chlorinate, then read it back to prove it took."""
+        async with self._cmd_lock:
+            if self.chlor.pool_setpoint is None:
+                await self._read_chlorinator()  # we must resend the current setpoints
+            if not self.chlor.present:
+                raise CommandNotConfirmedError("the controller has no chlorinator set up")
+            for attempt in range(1, self.timing.attempts + 1):
+                if attempt > 1:
+                    self.stats.commands_retried += 1
+                payload = cmd_set_chlor(
+                    self.chlor.pool_setpoint or 0,
+                    self.chlor.spa_setpoint or 0,
+                    hours if on else 0,
+                )
+                ack = self._expect(self._ack_for(Action.SET_CHLOR))
+                await self._send_or_drop(ack, Action.SET_CHLOR, payload)
+                await self._await(ack, self.timing.ack_timeout)
+                await self._read_chlorinator()
+                if (self.chlor.super_chlor_hours > 0) == on:
+                    return
+            self.stats.commands_failed += 1
+            raise CommandNotConfirmedError(
+                f"the controller didn't {'start' if on else 'stop'} super-chlorinate"
+            )
 
     async def write_schedule(self, slot: int, wanted: WantedSchedule | None) -> ScheduleSlot:
         """Write (or clear) a slot, then read it back from the controller to prove it stuck."""

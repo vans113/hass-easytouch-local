@@ -12,6 +12,7 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 | --- | --- |
 | `switch.pool_controller_<circuit>` | **One switch per circuit**, found automatically and named as on the panel (custom names included). Circuits set to *Not Used* are skipped. |
 | `switch.pool_controller_pool_pump` | The pool pump. This one isn't a controller circuit: the integration builds it from the **pump circuits** you choose. Its `controls` attribute shows what it switches (e.g. `Pool + High Speed`). Turns the **pump circuits** you choose on together, in order, and off in reverse. On when all of them are on and, if a power sensor is set, the motor is actually drawing power. |
+| `switch.pool_controller_super_chlorinate` | IntelliChlor super-chlorinate, run by the controller (it keeps the pump on). On starts it for the hours set in the options (default 8); off cancels. Confirmed by reading it back; `hours_left` attribute. |
 | `select.pool_controller_schedule_runs_on` | **Home Assistant** (HA switches the pump; the controller keeps no schedules) or **Controller** (HA writes the schedules into the controller and the controller runs the pump itself) |
 | `binary_sensor.pool_controller_controller_link` | Fresh status is arriving from the controller |
 | `binary_sensor.pool_controller_schedule_sync` | Problem: the controller's schedules couldn't be made to match |

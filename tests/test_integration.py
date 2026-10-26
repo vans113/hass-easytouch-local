@@ -495,3 +495,32 @@ async def test_circuits_missing_on_this_model_are_hidden(hass: HomeAssistant, fa
     await hass.async_block_till_done()
     assert registry.async_get(stale.entity_id) is None
     await _unload(hass, entry)
+
+
+async def test_super_chlorinate(hass: HomeAssistant, fake: FakeEasyTouch):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    assert await _until(hass, lambda: _has(hass, "switch", "super_chlorinate"))
+    eid = _eid(hass, "switch", "super_chlorinate")
+    assert await _until(hass, lambda: hass.states.get(eid).state == STATE_OFF)
+    await hass.services.async_call("switch", "turn_on", {"entity_id": eid}, blocking=True)
+    assert fake.state.super_hours == 8
+    assert fake.state.chlor_pool == 50  # setpoints kept
+    assert fake.state.chlor_spa == 10
+    assert hass.states.get(eid).state == STATE_ON
+    assert hass.states.get(eid).attributes["hours_left"] == 8
+    await hass.services.async_call("switch", "turn_off", {"entity_id": eid}, blocking=True)
+    assert fake.state.super_hours == 0
+    assert hass.states.get(eid).state == STATE_OFF
+    await _unload(hass, entry)
+
+
+async def test_super_chlorinate_not_confirmed(hass: HomeAssistant, fake: FakeEasyTouch):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    assert await _until(hass, lambda: _has(hass, "switch", "super_chlorinate"))
+    eid = _eid(hass, "switch", "super_chlorinate")
+    assert await _until(hass, lambda: hass.states.get(eid).state == STATE_OFF)
+    fake.drop_writes[Action.SET_CHLOR] = 10
+    with pytest.raises(HomeAssistantError, match="didn't start super-chlorinate"):
+        await hass.services.async_call("switch", "turn_on", {"entity_id": eid}, blocking=True)
+    assert hass.states.get(eid).state == STATE_OFF
+    await _unload(hass, entry)

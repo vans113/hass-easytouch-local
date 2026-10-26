@@ -69,7 +69,8 @@
           "winter_stop": "Winter stop",
           "source_addr": "RS-485 address to send from",
           "pump_circuits": "Pump circuits (what the Pool pump switch turns on)",
-          "circuit_names": "Rename circuits"
+          "circuit_names": "Rename circuits",
+          "super_chlor_hours": "Super chlorinate length (hours)"
         },
         "data_description": {
           "schedule_mode": "Home Assistant: HA switches the pump and the controller keeps no schedules. Controller: HA writes the schedules into the controller and verifies them, and the controller runs the pump on its own.",
@@ -77,7 +78,8 @@
           "summer_months": "Months that use the summer weekday/weekend times, e.g. 4-10",
           "source_addr": "Leave at 33 unless another remote uses it.",
           "pump_circuits": "The Pool pump switch is made by this integration and switches these circuits as one: on in this order, off in reverse. Usually just 6 (Pool). A two-speed pump wired to the high-speed relay needs Pool and High Speed (6, 2), or the panel drops it after its 5-minute start timer.",
-          "circuit_names": "Optional number:name pairs to override the panel's names, e.g. 2:Pump High Speed, 3:Lights"
+          "circuit_names": "Optional number:name pairs to override the panel's names, e.g. 2:Pump High Speed, 3:Lights",
+          "super_chlor_hours": "How long the Super chlorinate switch runs the IntelliChlor at 100%. The controller keeps the pump on for that time."
         },
         "description": "The Pool pump switch currently turns on: {pump}.\n\nCircuits found on the controller: {circuits}"
       }
@@ -99,6 +101,9 @@
     "switch": {
       "pool_pump": {
         "name": "Pool pump"
+      },
+      "super_chlorinate": {
+        "name": "Super chlorinate"
       }
     },
     "binary_sensor": {
