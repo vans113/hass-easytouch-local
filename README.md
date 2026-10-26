@@ -66,7 +66,7 @@ The controller's clock is set from Home Assistant every night at 03:00 (which al
 
 ## Installation
 
-1. HACS → ⋮ → **Custom repositories** → add this repository as an *Integration*, then install **EasyTouch Local** and restart Home Assistant.
+1. HACS → ⋮ → **Custom repositories** → add this repository as an *Integration*, then install **EasyTouch Local** and restart Home Assistant. (Once it is in the HACS default store, just search for **EasyTouch Local**.)
 2. Settings → Devices & services → **Add integration** → *EasyTouch Local*, then pick how the bridge connects (see above).
 3. Leave **Listen only** on for the first install. In this mode nothing is ever sent to the controller.
 4. In the options, set **pump circuits** if your pump needs more than Pool (the options page lists the circuits it found).
