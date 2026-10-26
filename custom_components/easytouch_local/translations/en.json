@@ -1,0 +1,128 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EasyTouch over RS-485",
+        "description": "Address of the RS-485-to-TCP bridge wired to the EasyTouch (for example an Elfin EW11 in TCP server mode).",
+        "data": {
+          "host": "Bridge host",
+          "port": "Bridge TCP port",
+          "read_only": "Listen only (never send anything to the controller)"
+        },
+        "data_description": {
+          "read_only": "Leave this on while njsPC is still running. Turn it off in the options when this integration takes over."
+        }
+      },
+      "reconfigure": {
+        "title": "Change bridge address",
+        "data": {
+          "host": "Bridge host",
+          "port": "Bridge TCP port"
+        }
+      }
+    },
+    "error": {
+      "no_status": "Connected, but no status broadcast from the EasyTouch arrived within 10 seconds. Check the bridge address, port and RS-485 wiring.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This bridge is already set up",
+      "reconfigure_successful": "Bridge address updated"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Pool controller options",
+        "data": {
+          "read_only": "Listen only (never send anything)",
+          "schedule_mode": "Who runs the pump schedule",
+          "pool_circuit": "Pool circuit number",
+          "high_speed_circuit": "High-speed (motor) circuit number",
+          "extra_circuits": "Extra circuit switches",
+          "power_entity": "Pump power sensor",
+          "power_threshold": "Running if power is at least (W)",
+          "summer_months": "Summer months",
+          "schedule_enabled_entity": "Schedule on/off helper",
+          "summer_weekday_start": "Summer weekday start",
+          "summer_weekday_stop": "Summer weekday stop",
+          "summer_weekend_start": "Summer weekend start",
+          "summer_weekend_stop": "Summer weekend stop",
+          "winter_start": "Winter start",
+          "winter_stop": "Winter stop",
+          "source_addr": "RS-485 address to send from"
+        },
+        "data_description": {
+          "schedule_mode": "Home Assistant: HA switches the pump and the controller keeps no schedules. Controller: HA writes the schedules into the controller and verifies them, and the controller runs the pump on its own.",
+          "extra_circuits": "Comma-separated number:name pairs, e.g. 3:AUX 2, 4:Lights",
+          "power_entity": "Optional. When it's reporting, a high-speed relay that's on with no motor draw shows the pool pump as off.",
+          "summer_months": "Months that use the summer weekday/weekend times, e.g. 4-10",
+          "source_addr": "Leave at 33 unless another remote uses it."
+        }
+      }
+    },
+    "error": {
+      "bad_months": "Use month numbers like 4-10 or 4,5,6"
+    }
+  },
+  "selector": {
+    "schedule_mode": {
+      "options": {
+        "home_assistant": "Home Assistant",
+        "controller": "Controller"
+      }
+    }
+  },
+  "entity": {
+    "switch": {
+      "pool_pump": { "name": "Pool pump" }
+    },
+    "binary_sensor": {
+      "connected": { "name": "Controller link" },
+      "service_mode": { "name": "Panel service mode" },
+      "freeze_protect": { "name": "Freeze protection" },
+      "start_timer": { "name": "Pump start timer" },
+      "water_sensor_fault": { "name": "Water temperature sensor" },
+      "schedule_problem": { "name": "Schedule sync" }
+    },
+    "sensor": {
+      "water_temp": { "name": "Water temperature" },
+      "air_temp": { "name": "Air temperature" },
+      "salt_level": { "name": "Salt level" },
+      "chlorinator_output": { "name": "Chlorinator output" },
+      "chlorinator_status": { "name": "Chlorinator status" },
+      "panel_mode": {
+        "name": "Panel mode",
+        "state": {
+          "auto": "Auto",
+          "service": "Service",
+          "timeout": "Timeout",
+          "service_timeout": "Service/Timeout"
+        }
+      },
+      "controller_schedules": { "name": "Controller schedules" },
+      "controller_time": { "name": "Controller clock" },
+      "clock_drift": { "name": "Clock drift" },
+      "delay_code": { "name": "Delay code" }
+    },
+    "select": {
+      "schedule_mode": {
+        "name": "Schedule runs on",
+        "state": {
+          "home_assistant": "Home Assistant",
+          "controller": "Controller"
+        }
+      }
+    },
+    "button": {
+      "sync_clock": { "name": "Sync controller clock" },
+      "sync_schedules": { "name": "Sync controller schedules" }
+    }
+  },
+  "issues": {
+    "schedule_sync_failed": {
+      "title": "Pool controller schedules aren't in sync",
+      "description": "Writing the pump schedule to the EasyTouch didn't stick: {error}\n\nIt retries every 5 minutes. Check the controller link and the panel."
+    }
+  }
+}

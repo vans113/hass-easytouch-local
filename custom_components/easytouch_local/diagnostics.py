@@ -1,0 +1,30 @@
+"""Diagnostics download for EasyTouch Local."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from homeassistant.core import HomeAssistant
+
+from . import EasyTouchConfigEntry
+
+
+async def async_get_config_entry_diagnostics(
+    hass: HomeAssistant, entry: EasyTouchConfigEntry
+) -> dict[str, Any]:
+    c = entry.runtime_data
+    return {
+        "entry": {"data": dict(entry.data), "options": dict(entry.options)},
+        "link": c.client.diagnostics(),
+        "schedule_sync": {
+            "state": c.schedule_sync.state,
+            "error": c.schedule_sync.error,
+            "last_success": str(c.schedule_sync.last_success),
+        },
+        "clock_drift_min": c.clock_drift,
+        "pump": {
+            "running": c.pump_running,
+            "high_speed_relay": c.high_speed_on,
+            "power_w": c.power_reading(),
+        },
+    }
