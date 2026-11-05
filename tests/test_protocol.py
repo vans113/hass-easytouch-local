@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+import pytest
+
 from custom_components.easytouch_local.protocol import (
     EVERY_DAY,
     WEEKDAYS,
@@ -134,6 +136,26 @@ def test_plan_empty_when_in_sync_and_clears_everything_for_no_schedules():
     assert plan_schedules(current, [WantedSchedule(6, 540, 775, WEEKDAYS)]).empty
     plan = plan_schedules(current, [])
     assert plan.clears == [3] and not plan.writes
+
+
+def test_plan_only_touches_managed_circuits():
+    current = {i: ScheduleSlot(i, 0, 0, 0, 0) for i in range(1, 13)}
+    current[1] = _slot(1, 3, 1140, 1380, EVERY_DAY)  # lights: not ours
+    current[2] = _slot(2, 6, 600, 700, EVERY_DAY)  # stray pump schedule
+    current[3] = _slot(3, 5, 480, 540, WEEKDAYS)  # heater: not ours
+    current[7] = ScheduleSlot(7, 2, 0, 720, 0, egg_timer=True)
+    assert plan_schedules(current, [], {6, 2}).clears == [2]
+    wanted = [WantedSchedule(c, 540, 775, WEEKDAYS) for c in (6, 2)]
+    plan = plan_schedules(current, wanted, {6, 2})
+    touched = set(plan.clears) | {s for s, _ in plan.writes}
+    assert touched.isdisjoint({1, 3, 7})
+    assert [s for s, _ in plan.writes] == [2, 4]  # reuses the stray, then the first empty
+    # Every other slot full of someone else's schedules: nothing gets evicted.
+    full = {i: _slot(i, 3, 60 * i, 60 * i + 30, EVERY_DAY) for i in range(1, 13)}
+    plan = plan_schedules(full, wanted, {6, 2})
+    assert not plan.clears and not plan.writes and len(plan.unplaced) == 2
+    with pytest.raises(ValueError):
+        plan_schedules(current, [WantedSchedule(3, 0, 60, EVERY_DAY)], {6, 2})
 
 
 def test_model_from_status():

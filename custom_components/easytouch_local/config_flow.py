@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from typing import Any
 
 from homeassistant.config_entries import (
@@ -16,10 +17,12 @@ from homeassistant.core import callback
 from homeassistant.helpers import selector
 import voluptuous as vol
 
-from .client import EasyTouchClient
+from .client import EasyTouchClient, normalize_ip
 from .const import (
+    CONF_BRIDGE_HOST,
     CONF_CIRCUIT_NAMES,
     CONF_CONNECTION,
+    CONF_MANAGE_SCHEDULES,
     CONF_POWER_ENTITY,
     CONF_POWER_THRESHOLD,
     CONF_PUMP_CIRCUITS,
@@ -37,6 +40,7 @@ from .const import (
     LISTEN_HOST,
     LOGGER,
     PROBE_WAIT_LISTEN,
+    SCHEDULE_MODE_CONTROLLER,
     SCHEDULE_MODES,
     TIME_HELPER_KEYS,
 )
@@ -54,11 +58,22 @@ async def _check_port_free(host: str, port: int) -> None:
     await server.wait_closed()
 
 
-async def _probe(host: str, port: int, listen: bool) -> bool:
+def _bridge_ip(value: Any) -> str | None:
+    """The bridge's IP address as typed, or None if it isn't one."""
+    try:
+        ipaddress.ip_address(str(value).strip())
+    except ValueError:
+        return None
+    return normalize_ip(str(value))
+
+
+async def _probe(host: str, port: int, listen: bool, bridge_host: str | None = None) -> bool:
     """Listen (never send) until a status broadcast arrives."""
     if listen:
         await _check_port_free(host, port)  # fail fast if the port is taken
-    client = EasyTouchClient(host, port, read_only=True, listen=listen)
+    client = EasyTouchClient(
+        host, port, read_only=True, listen=listen, allowed_peer=bridge_host if listen else None
+    )
     client.start()
     try:
         return await client.wait_for_status(PROBE_WAIT_LISTEN if listen else PROBE_WAIT)
@@ -70,6 +85,7 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
     """Add the controller by its RS-485 bridge."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._read_only = True
@@ -91,7 +107,7 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
             port = int(user_input[CONF_PORT])
-            return await self._finish(CONNECTION_CONNECT, host, port, user_input, errors)
+            return await self._finish(CONNECTION_CONNECT, host, port, None, user_input, errors)
         return self.async_show_form(
             step_id="connect",
             data_schema=vol.Schema(
@@ -109,17 +125,16 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             port = int(user_input[CONF_PORT])
-            result = await self._finish(CONNECTION_LISTEN, LISTEN_HOST, port, user_input, errors)
-            if result is not None:
-                return result
+            bridge = _bridge_ip(user_input.get(CONF_BRIDGE_HOST, ""))
+            if bridge is None:
+                errors[CONF_BRIDGE_HOST] = "bad_bridge_host"
+            else:
+                return await self._finish(
+                    CONNECTION_LISTEN, LISTEN_HOST, port, bridge, user_input, errors
+                )
         return self.async_show_form(
             step_id="listen",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_PORT, default=DEFAULT_PORT): PORT_FIELD,
-                    vol.Optional(CONF_READ_ONLY, default=True): bool,
-                }
-            ),
+            data_schema=self._schema_for(CONNECTION_LISTEN, user_input or {}),
             errors=errors,
         )
 
@@ -128,6 +143,7 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         connection: str,
         host: str,
         port: int,
+        bridge_host: str | None,
         user_input: dict[str, Any],
         errors: dict[str, str],
     ) -> ConfigFlowResult:
@@ -150,9 +166,12 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
             errors["base"] = "unknown"
             ok = False
         if ok:
+            data = {CONF_CONNECTION: connection, CONF_HOST: host, CONF_PORT: port}
+            if connection == CONNECTION_LISTEN:
+                data[CONF_BRIDGE_HOST] = bridge_host
             return self.async_create_entry(
                 title="Pool controller",
-                data={CONF_CONNECTION: connection, CONF_HOST: host, CONF_PORT: port},
+                data=data,
                 options={**DEFAULT_OPTIONS, CONF_READ_ONLY: user_input.get(CONF_READ_ONLY, True)},
             )
         errors.setdefault("base", "no_status")
@@ -167,6 +186,10 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         fields: dict = {}
         if connection == CONNECTION_CONNECT:
             fields[vol.Required(CONF_HOST, default=user_input.get(CONF_HOST, ""))] = str
+        else:
+            fields[vol.Required(CONF_BRIDGE_HOST, default=user_input.get(CONF_BRIDGE_HOST, ""))] = (
+                str
+            )
         fields[vol.Required(CONF_PORT, default=user_input.get(CONF_PORT, DEFAULT_PORT))] = (
             PORT_FIELD
         )
@@ -183,19 +206,30 @@ class EasyTouchConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             host = LISTEN_HOST if listen else user_input[CONF_HOST].strip()
             port = int(user_input[CONF_PORT])
-            # Free the port/bridge slot so the probe can get in.
-            await entry.runtime_data.client.stop()
-            if await _probe(host, port, listen):
-                return self.async_update_reload_and_abort(
-                    entry,
-                    unique_id=f"listen:{port}" if listen else f"{host}:{port}",
-                    data_updates={CONF_HOST: host, CONF_PORT: port},
-                )
-            entry.runtime_data.client.start()
-            errors["base"] = "no_status"
+            bridge = _bridge_ip(user_input.get(CONF_BRIDGE_HOST, "")) if listen else None
+            if listen and bridge is None:
+                errors[CONF_BRIDGE_HOST] = "bad_bridge_host"
+            else:
+                # Free the port/bridge slot so the probe can get in.
+                await entry.runtime_data.client.stop()
+                if await _probe(host, port, listen, bridge):
+                    updates: dict[str, Any] = {CONF_HOST: host, CONF_PORT: port}
+                    if listen:
+                        updates[CONF_BRIDGE_HOST] = bridge
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        unique_id=f"listen:{port}" if listen else f"{host}:{port}",
+                        data_updates=updates,
+                    )
+                entry.runtime_data.client.start()
+                errors["base"] = "no_status"
         current = user_input or dict(entry.data)
         fields: dict = {}
-        if not listen:
+        if listen:
+            fields[vol.Required(CONF_BRIDGE_HOST, default=current.get(CONF_BRIDGE_HOST) or "")] = (
+                str
+            )
+        else:
             fields[vol.Required(CONF_HOST, default=current.get(CONF_HOST, ""))] = str
         fields[vol.Required(CONF_PORT, default=current.get(CONF_PORT, DEFAULT_PORT))] = PORT_FIELD
         return self.async_show_form(
@@ -217,6 +251,11 @@ class EasyTouchOptionsFlow(OptionsFlow):
                 errors[CONF_SUMMER_MONTHS] = "bad_months"
             if not parse_circuit_list(user_input[CONF_PUMP_CIRCUITS]):
                 errors[CONF_PUMP_CIRCUITS] = "bad_circuits"
+            if user_input.get(CONF_SCHEDULE_MODE) == SCHEDULE_MODE_CONTROLLER:
+                if not user_input.get(CONF_MANAGE_SCHEDULES):
+                    errors[CONF_MANAGE_SCHEDULES] = "controller_needs_manage"
+                elif any(not user_input.get(key) for key in TIME_HELPER_KEYS):
+                    errors["base"] = "missing_time_helpers"
             if not errors:
                 cleaned = {k: (v or "") if isinstance(v, str) else v for k, v in user_input.items()}
                 # A cleared optional field is simply missing from the form data.
@@ -246,6 +285,7 @@ class EasyTouchOptionsFlow(OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Required(CONF_READ_ONLY, default=current[CONF_READ_ONLY]): bool,
+                vol.Required(CONF_MANAGE_SCHEDULES, default=current[CONF_MANAGE_SCHEDULES]): bool,
                 vol.Required(
                     CONF_SCHEDULE_MODE, default=current[CONF_SCHEDULE_MODE]
                 ): selector.SelectSelector(

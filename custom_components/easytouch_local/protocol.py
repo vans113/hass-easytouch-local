@@ -690,30 +690,40 @@ class SchedulePlan:
         return not (self.writes or self.clears or self.unplaced)
 
 
-def plan_schedules(current: dict[int, ScheduleSlot], wanted: list[WantedSchedule]) -> SchedulePlan:
+def plan_schedules(
+    current: dict[int, ScheduleSlot],
+    wanted: list[WantedSchedule],
+    managed: set[int] | None = None,
+) -> SchedulePlan:
     """Diff the controller's slots against what HA wants.
 
-    Egg timers are never touched. Any other schedule that isn't wanted is
-    cleared. Wanted schedules that already exist stay in their slot; the rest
-    go into free slots (lowest first).
+    Only slots for ``managed`` circuits are ever cleared or reused (all
+    circuits when ``managed`` is None). Slots for any other circuit, and egg
+    timers, are left exactly as they are. Wanted schedules that already exist
+    stay in their slot; the rest go into empty slots or slots being cleared
+    (lowest first).
     """
+    if managed is not None:
+        stray = [w for w in wanted if w.circuit not in managed]
+        if stray:
+            raise ValueError(f"wanted schedules for unmanaged circuits: {stray}")
     plan = SchedulePlan()
     remaining = list(dict.fromkeys(wanted))  # drop exact duplicates, keep order
-    keep: set[int] = set()
     for slot_id in sorted(current):
         slot = current[slot_id]
         if slot.egg_timer or slot.empty:
             continue
+        if managed is not None and slot.circuit not in managed:
+            continue  # someone else's schedule: never touched
         match = next((w for w in remaining if slot.same_schedule(w)), None)
         if match is not None:
             remaining.remove(match)
-            keep.add(slot_id)
         else:
             plan.clears.append(slot_id)
     free = sorted(
         s
         for s in range(1, MAX_SCHEDULE_SLOTS + 1)
-        if s not in keep and not (s in current and current[s].egg_timer)
+        if s not in current or current[s].empty or s in plan.clears
     )
     for w in remaining:
         if free:

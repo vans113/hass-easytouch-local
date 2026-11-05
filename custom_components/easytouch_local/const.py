@@ -17,6 +17,7 @@ CONF_CONNECTION = "connection"
 CONNECTION_CONNECT = "connect"  # HA connects to the bridge (bridge is a TCP server)
 CONNECTION_LISTEN = "listen"  # the bridge connects to HA (bridge is a TCP client)
 LISTEN_HOST = "0.0.0.0"
+CONF_BRIDGE_HOST = "bridge_host"  # listen mode: the only address allowed to connect
 
 # Options
 CONF_READ_ONLY = "read_only"
@@ -26,6 +27,7 @@ CONF_CIRCUIT_NAMES = "circuit_names"
 CONF_POWER_ENTITY = "power_entity"
 CONF_POWER_THRESHOLD = "power_threshold"
 CONF_SCHEDULE_MODE = "schedule_mode"
+CONF_MANAGE_SCHEDULES = "manage_schedules"
 CONF_SUMMER_MONTHS = "summer_months"
 CONF_SCHEDULE_ENABLED_ENTITY = "schedule_enabled_entity"
 CONF_SUMMER_WEEKDAY_START = "summer_weekday_start"
@@ -54,17 +56,19 @@ DEFAULT_OPTIONS: dict = {
     CONF_SOURCE_ADDR: 33,
     CONF_PUMP_CIRCUITS: "6",
     CONF_CIRCUIT_NAMES: "",
-    CONF_POWER_ENTITY: "sensor.span_panel_span_cloud_pool_equipment_power",
+    CONF_POWER_ENTITY: "",
     CONF_POWER_THRESHOLD: 300,
+    # Off: the integration never writes or clears a schedule on the controller.
+    CONF_MANAGE_SCHEDULES: False,
     CONF_SCHEDULE_MODE: SCHEDULE_MODE_HA,
     CONF_SUMMER_MONTHS: "4-10",
-    CONF_SCHEDULE_ENABLED_ENTITY: "input_boolean.pool_pump_schedule_enabled",
-    CONF_SUMMER_WEEKDAY_START: "input_datetime.pool_summer_weekday_start",
-    CONF_SUMMER_WEEKDAY_STOP: "input_datetime.pool_summer_weekday_stop",
-    CONF_SUMMER_WEEKEND_START: "input_datetime.pool_summer_weekend_start",
-    CONF_SUMMER_WEEKEND_STOP: "input_datetime.pool_summer_weekend_stop",
-    CONF_WINTER_START: "input_datetime.pool_winter_start",
-    CONF_WINTER_STOP: "input_datetime.pool_winter_stop",
+    CONF_SCHEDULE_ENABLED_ENTITY: "",
+    CONF_SUMMER_WEEKDAY_START: "",
+    CONF_SUMMER_WEEKDAY_STOP: "",
+    CONF_SUMMER_WEEKEND_START: "",
+    CONF_SUMMER_WEEKEND_STOP: "",
+    CONF_WINTER_START: "",
+    CONF_WINTER_STOP: "",
     CONF_SUPER_CHLOR_HOURS: 8,
 }
 

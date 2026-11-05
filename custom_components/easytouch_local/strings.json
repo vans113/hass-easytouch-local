@@ -23,12 +23,14 @@
       },
       "listen": {
         "title": "Let the bridge connect",
-        "description": "Point the bridge's TCP client (for example the EW11's Socket B) at this Home Assistant's IP address and the port below. The bridge doesn't need to be connected yet: the entities stay unavailable until it dials in.",
+        "description": "Point the bridge's TCP client (for example the EW11's Socket A or B) at this Home Assistant's IP address and the port below. Only connections from the bridge address you enter are accepted. The bridge doesn't need to be connected yet: the entities stay unavailable until it dials in.",
         "data": {
+          "bridge_host": "Bridge IP address",
           "port": "Port to listen on",
           "read_only": "Listen only (never send anything to the controller)"
         },
         "data_description": {
+          "bridge_host": "The IP address the bridge connects from (give it a DHCP reservation). Connections from any other address are refused.",
           "read_only": "Leave this on for the first install. Turn it off in the options when this integration takes over."
         }
       },
@@ -36,6 +38,7 @@
         "title": "Change connection",
         "data": {
           "host": "Bridge host",
+          "bridge_host": "Bridge IP address (only this address may connect)",
           "port": "Port"
         }
       }
@@ -43,7 +46,8 @@
     "error": {
       "no_status": "No status broadcast from the EasyTouch arrived. Check the bridge address or where the bridge points, the port, and the RS-485 wiring.",
       "port_in_use": "Something on this Home Assistant is already using that port.",
-      "unknown": "Unexpected error"
+      "unknown": "Unexpected error",
+      "bad_bridge_host": "Enter the bridge's IP address, for example 192.168.1.50."
     },
     "abort": {
       "already_configured": "This bridge is already set up",
@@ -70,23 +74,28 @@
           "source_addr": "RS-485 address to send from",
           "pump_circuits": "Pump circuits (what the Pool pump switch turns on)",
           "circuit_names": "Rename circuits",
-          "super_chlor_hours": "Super chlorinate length (hours)"
+          "super_chlor_hours": "Super chlorinate length (hours)",
+          "manage_schedules": "Manage pump schedules on the controller"
         },
         "data_description": {
-          "schedule_mode": "Home Assistant: HA switches the pump and the controller keeps no schedules. Controller: HA writes the schedules into the controller and verifies them, and the controller runs the pump on its own.",
+          "schedule_mode": "Only matters with schedule management on. Home Assistant: HA switches the pump and the controller keeps no pump schedules. Controller: HA writes the pump schedules into the controller from the time helpers below and verifies them, and the controller runs the pump on its own.",
           "power_entity": "Optional. When it's reporting, a high-speed relay that's on with no motor draw shows the pool pump as off.",
           "summer_months": "Months that use the summer weekday/weekend times, e.g. 4-10",
           "source_addr": "Leave at 33 unless another remote uses it.",
           "pump_circuits": "The Pool pump switch is made by this integration and switches these circuits as one: on in this order, off in reverse. Usually just 6 (Pool). A two-speed pump wired to the high-speed relay needs Pool and High Speed (6, 2), or the panel drops it after its 5-minute start timer.",
           "circuit_names": "Optional number:name pairs to override the panel's names, e.g. 2:Pump High Speed, 3:Lights",
-          "super_chlor_hours": "How long the Super chlorinate switch runs the IntelliChlor at 100%. The controller keeps the pump on for that time."
+          "super_chlor_hours": "How long the Super chlorinate switch runs the IntelliChlor at 100%. The controller keeps the pump on for that time.",
+          "manage_schedules": "Off (default): nothing is ever written to or cleared from the controller's schedules. On: the integration manages schedules for the pump circuits only. Schedules for any other circuit (lights, heater, AUX) and egg timers are never touched.",
+          "summer_weekday_start": "The six time helpers are needed for Controller mode."
         },
         "description": "The Pool pump switch currently turns on: {pump}.\n\nCircuits found on the controller: {circuits}"
       }
     },
     "error": {
       "bad_months": "Use month numbers like 4-10 or 4,5,6",
-      "bad_circuits": "Enter one or more circuit numbers, e.g. 6 or 6, 2"
+      "bad_circuits": "Enter one or more circuit numbers, e.g. 6 or 6, 2",
+      "controller_needs_manage": "Controller mode writes pump schedules to the controller, so turn on schedule management too.",
+      "missing_time_helpers": "Controller mode needs all six time helpers (summer weekday, summer weekend and winter start/stop). Pick an input_datetime or time entity for each, or choose Home Assistant mode."
     }
   },
   "selector": {
@@ -193,7 +202,11 @@
   "issues": {
     "schedule_sync_failed": {
       "title": "Pool controller schedules aren't in sync",
-      "description": "Writing the pump schedule to the EasyTouch didn't stick: {error}\n\nIt retries every 5 minutes. Check the controller link and the panel."
+      "description": "Writing the pump schedule to the EasyTouch didn't work: {error}\n\nIt retries every 5 minutes. Check the controller link, the panel and the integration's options."
+    },
+    "bridge_address_missing": {
+      "title": "Pool controller: set the bridge address",
+      "description": "EasyTouch Local is listening on port {port} and accepts a connection from any host, because this entry was set up before the bridge address was asked for. Open Settings → Devices & services → EasyTouch Local → ⋮ → Reconfigure and enter the bridge's IP address; after that only the bridge can connect."
     }
   }
 }

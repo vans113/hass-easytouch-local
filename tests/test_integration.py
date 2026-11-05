@@ -18,7 +18,9 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.easytouch_local import client as client_mod
 from custom_components.easytouch_local.const import (
+    CONF_BRIDGE_HOST,
     CONF_CONNECTION,
+    CONF_MANAGE_SCHEDULES,
     CONF_POWER_ENTITY,
     CONF_PUMP_CIRCUITS,
     CONF_READ_ONLY,
@@ -26,6 +28,8 @@ from custom_components.easytouch_local.const import (
     DEFAULT_OPTIONS,
     DOMAIN,
     SCHEDULE_MODE_CONTROLLER,
+    SCHEDULE_MODE_HA,
+    TIME_HELPER_KEYS,
 )
 from custom_components.easytouch_local.protocol import Action
 
@@ -34,6 +38,17 @@ from .test_client import FAST
 
 POWER = "sensor.pool_power"
 TWO_SPEED = {CONF_PUMP_CIRCUITS: "6, 2"}  # Michael's pool: Pool + High Speed
+MANAGE = {CONF_MANAGE_SCHEDULES: True}
+HELPERS = {
+    "schedule_enabled_entity": "input_boolean.pool_pump_schedule_enabled",
+    "summer_weekday_start": "input_datetime.pool_summer_weekday_start",
+    "summer_weekday_stop": "input_datetime.pool_summer_weekday_stop",
+    "summer_weekend_start": "input_datetime.pool_summer_weekend_start",
+    "summer_weekend_stop": "input_datetime.pool_summer_weekend_stop",
+    "winter_start": "input_datetime.pool_winter_start",
+    "winter_stop": "input_datetime.pool_winter_stop",
+}
+LIGHTS_SCHEDULE = bytes([2, 3, 19, 0, 23, 0, 127])  # slot 2: circuit 3 (lights) 19:00-23:00 daily
 
 
 @pytest.fixture
@@ -195,15 +210,51 @@ async def test_silent_link_goes_unavailable_and_recovers_without_reload(
     await _unload(hass, entry)
 
 
-async def test_ha_mode_clears_stray_schedules_but_keeps_egg_timers(
+async def test_schedules_untouched_unless_management_is_on(
     hass: HomeAssistant, fake: FakeEasyTouch
 ):
-    fake.state.schedules[1] = bytes([1, 6, 9, 0, 12, 55, 62])  # someone added one at the panel
-    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    """Turning off listen-only alone must never change the panel's schedules."""
+    fake.state.schedules[1] = bytes([1, 6, 9, 0, 12, 55, 62])
+    fake.state.schedules[2] = LIGHTS_SCHEDULE
+    before = dict(fake.state.schedules)
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})  # default: not managed
+    coordinator = entry.runtime_data
+    assert not coordinator.manage_schedules
+    assert await _until(hass, lambda: coordinator.schedule_sync.state == "not_managed")
+    assert await _until(hass, lambda: len(coordinator.client.schedules) == 12)
+    await hass.async_block_till_done()
+    assert fake.state.schedules == before
+    assert not fake.commands(145)  # no schedule write was ever sent
+    with pytest.raises(HomeAssistantError, match="management is off"):
+        await hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": _eid(hass, "button", "sync_schedules")},
+            blocking=True,
+        )
+    with pytest.raises(HomeAssistantError, match="Manage pump schedules"):
+        await hass.services.async_call(
+            "select",
+            "select_option",
+            {
+                "entity_id": _eid(hass, "select", "schedule_mode"),
+                "option": SCHEDULE_MODE_CONTROLLER,
+            },
+            blocking=True,
+        )
+    assert fake.state.schedules == before
+    await _unload(hass, entry)
+
+
+async def test_ha_mode_clears_only_pump_schedules(hass: HomeAssistant, fake: FakeEasyTouch):
+    fake.state.schedules[1] = bytes([1, 6, 9, 0, 12, 55, 62])  # pump schedule added at the panel
+    fake.state.schedules[2] = LIGHTS_SCHEDULE
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
     coordinator = entry.runtime_data
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
     assert 1 not in fake.state.schedules
-    assert set(fake.state.schedules) == {7, 8}  # egg timers untouched
+    assert fake.state.schedules[2] == LIGHTS_SCHEDULE  # not a pump circuit: kept
+    assert set(fake.state.schedules) == {2, 7, 8}  # egg timers untouched
     await _unload(hass, entry)
 
 
@@ -214,7 +265,8 @@ async def test_controller_mode_writes_and_verifies_schedules(
 
     # October counts as summer (Apr-Oct) for the pump windows.
     monkeypatch.setattr(coord, "_now", lambda: datetime(2026, 10, 26, 8, 0))
-    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **TWO_SPEED})
+    fake.state.schedules[2] = LIGHTS_SCHEDULE
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **TWO_SPEED, **MANAGE, **HELPERS})
     coordinator = entry.runtime_data
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
     select = _eid(hass, "select", "schedule_mode")
@@ -227,10 +279,11 @@ async def test_controller_mode_writes_and_verifies_schedules(
     )
     assert await _until(
         hass,
-        lambda: coordinator.schedule_sync.state == "in_sync" and len(fake.state.schedules) == 6,
+        lambda: coordinator.schedule_sync.state == "in_sync" and len(fake.state.schedules) == 7,
         6,
     )
-    written = {v[1:] for k, v in fake.state.schedules.items() if k not in (7, 8)}
+    assert fake.state.schedules[2] == LIGHTS_SCHEDULE  # never moved or overwritten
+    written = {v[1:] for k, v in fake.state.schedules.items() if k not in (2, 7, 8)}
     assert written == {
         bytes([6, 9, 0, 12, 55, 62]),  # Pool, Mon-Fri 9:00-12:55
         bytes([2, 9, 0, 12, 55, 62]),  # High speed, same
@@ -251,16 +304,17 @@ async def test_controller_mode_writes_and_verifies_schedules(
         ),
         6,
     )
-    # Schedule switched off: everything but the egg timers goes.
+    # Schedule switched off: the pump schedules go; lights and egg timers stay.
     hass.states.async_set("input_boolean.pool_pump_schedule_enabled", "off")
-    assert await _until(hass, lambda: set(fake.state.schedules) == {7, 8}, 6)
+    assert await _until(hass, lambda: set(fake.state.schedules) == {2, 7, 8}, 6)
+    assert fake.state.schedules[2] == LIGHTS_SCHEDULE
     await _unload(hass, entry)
 
 
 async def test_schedule_failure_raises_repair_and_problem(hass: HomeAssistant, fake: FakeEasyTouch):
     fake.state.schedules[1] = bytes([1, 6, 9, 0, 12, 55, 62])
     fake.drop_writes[145] = 99  # never sticks
-    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
     coordinator = entry.runtime_data
     problem = _eid(hass, "binary_sensor", "schedule_problem")
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "failed", 8)
@@ -347,7 +401,7 @@ async def test_circuits_are_discovered_with_panel_names(hass: HomeAssistant, fak
 
 
 async def test_reconnect_re_reads_everything(hass: HomeAssistant, fake: FakeEasyTouch):
-    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
     coordinator = entry.runtime_data
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
     before = len(fake.commands(Action.GET_CIRCUIT))
@@ -379,7 +433,12 @@ async def test_listen_mode_bridge_dials_in(hass: HomeAssistant):
     entry = MockConfigEntry(
         domain=DOMAIN,
         unique_id=f"listen:{port}",
-        data={CONF_CONNECTION: "listen", CONF_HOST: "127.0.0.1", CONF_PORT: port},
+        data={
+            CONF_CONNECTION: "listen",
+            CONF_HOST: "127.0.0.1",
+            CONF_PORT: port,
+            CONF_BRIDGE_HOST: "127.0.0.1",
+        },
         options={**DEFAULT_OPTIONS, CONF_POWER_ENTITY: "", CONF_READ_ONLY: False},
         title="Pool controller",
     )
@@ -423,10 +482,20 @@ async def test_config_flow_listen(hass: HomeAssistant):
             result["flow_id"], {"next_step_id": "listen"}
         )
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PORT: port, CONF_READ_ONLY: True}
+            result["flow_id"], {CONF_BRIDGE_HOST: "not an ip", CONF_PORT: port}
+        )
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {CONF_BRIDGE_HOST: "bad_bridge_host"}
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_BRIDGE_HOST: "127.0.0.1", CONF_PORT: port, CONF_READ_ONLY: True},
         )
         assert result["type"] is FlowResultType.CREATE_ENTRY
         assert result["data"][CONF_CONNECTION] == "listen"
+        assert result["data"][CONF_BRIDGE_HOST] == "127.0.0.1"
+        assert result["options"][CONF_MANAGE_SCHEDULES] is False
+        assert result["options"][CONF_POWER_ENTITY] == ""
+        assert all(result["options"][k] == "" for k in TIME_HELPER_KEYS)
         await hass.async_block_till_done()
         await _unload(hass, hass.config_entries.async_entries(DOMAIN)[0])
     finally:
@@ -442,7 +511,7 @@ def _has(hass: HomeAssistant, platform: str, key: str) -> bool:
 
 
 async def test_quick_reconnect_also_re_reads(hass: HomeAssistant, fake: FakeEasyTouch):
-    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False})
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
     coordinator = entry.runtime_data
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
     before = len(fake.commands(Action.GET_CIRCUIT))
@@ -463,7 +532,7 @@ async def test_config_flow_listen_before_bridge_is_pointed(hass: HomeAssistant):
         result["flow_id"], {"next_step_id": "listen"}
     )
     result = await hass.config_entries.flow.async_configure(
-        result["flow_id"], {CONF_PORT: port, CONF_READ_ONLY: True}
+        result["flow_id"], {CONF_BRIDGE_HOST: "127.0.0.1", CONF_PORT: port, CONF_READ_ONLY: True}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
@@ -545,4 +614,156 @@ async def test_chlorinator_output_keeps_super_chlorinate(hass: HomeAssistant, fa
         await hass.services.async_call(
             "number", "set_value", {"entity_id": num, "value": 60}, blocking=True
         )
+    await _unload(hass, entry)
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+async def test_listen_mode_refuses_other_hosts(hass: HomeAssistant):
+    """Only the configured bridge address may connect; anyone else is closed."""
+    port = _free_port()
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"listen:{port}",
+        data={
+            CONF_CONNECTION: "listen",
+            CONF_HOST: "127.0.0.1",
+            CONF_PORT: port,
+            CONF_BRIDGE_HOST: "192.0.2.10",  # the real bridge, somewhere else
+        },
+        options={**DEFAULT_OPTIONS, CONF_READ_ONLY: False},
+        title="Pool controller",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    impostor = FakeEasyTouch(interval=0.05)
+    await impostor.start(serve=False)
+    try:
+        await impostor.dial("127.0.0.1", port)
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        client = entry.runtime_data.client
+        assert await _until(hass, lambda: client.stats.rejected_peers >= 1)
+        assert client.status is None and client.stats.connects == 0
+        assert hass.states.get(_eid(hass, "sensor", "air_temp")).state == STATE_UNAVAILABLE
+        await _unload(hass, entry)
+    finally:
+        await impostor.stop()
+
+
+async def test_legacy_listen_entry_without_bridge_address_raises_issue(hass: HomeAssistant):
+    from homeassistant.helpers import issue_registry as ir
+
+    port = _free_port()
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"listen:{port}",
+        data={CONF_CONNECTION: "listen", CONF_HOST: "0.0.0.0", CONF_PORT: port},
+        options={**DEFAULT_OPTIONS},
+        title="Pool controller",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, f"bridge_address_missing_{entry.entry_id}")
+    await _unload(hass, entry)
+
+
+async def test_migration_keeps_management_for_entries_already_in_control(
+    hass: HomeAssistant, fake: FakeEasyTouch
+):
+    """1.1 entries that were sending keep schedule management; listen-only ones don't."""
+    old = {k: v for k, v in DEFAULT_OPTIONS.items() if k != CONF_MANAGE_SCHEDULES}
+    sending = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=f"127.0.0.1:{fake.port}",
+        data={CONF_HOST: "127.0.0.1", CONF_PORT: fake.port},
+        options={**old, CONF_READ_ONLY: False},
+        minor_version=1,
+    )
+    sending.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(sending.entry_id)
+    await hass.async_block_till_done()
+    assert sending.minor_version == 2
+    assert sending.options[CONF_MANAGE_SCHEDULES] is True
+    await _unload(hass, sending)
+
+    listening = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id="127.0.0.1:1",
+        data={CONF_HOST: "127.0.0.1", CONF_PORT: fake.port},
+        options={**old, CONF_READ_ONLY: True},
+        minor_version=1,
+    )
+    listening.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(listening.entry_id)
+    await hass.async_block_till_done()
+    assert listening.options[CONF_MANAGE_SCHEDULES] is False
+    await _unload(hass, listening)
+
+
+async def test_options_controller_mode_needs_management_and_time_helpers(
+    hass: HomeAssistant, fake: FakeEasyTouch
+):
+    entry = await _setup(hass, fake)
+    base = {
+        CONF_READ_ONLY: False,
+        CONF_PUMP_CIRCUITS: "6",
+        "power_threshold": 300,
+        "summer_months": "4-10",
+        "super_chlor_hours": 8,
+        "source_addr": 33,
+        CONF_SCHEDULE_MODE: SCHEDULE_MODE_CONTROLLER,
+    }
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**base, CONF_MANAGE_SCHEDULES: False}
+    )
+    assert result["errors"] == {CONF_MANAGE_SCHEDULES: "controller_needs_manage"}
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**base, CONF_MANAGE_SCHEDULES: True}
+    )
+    assert result["errors"] == {"base": "missing_time_helpers"}
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"], {**base, CONF_MANAGE_SCHEDULES: True, **HELPERS}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    await hass.async_block_till_done()
+    entry = hass.config_entries.async_entries(DOMAIN)[0]
+    assert entry.options[CONF_SCHEDULE_MODE] == SCHEDULE_MODE_CONTROLLER
+    assert entry.options[CONF_MANAGE_SCHEDULES] is True
+
+    flow = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        flow["flow_id"],
+        {**base, CONF_SCHEDULE_MODE: SCHEDULE_MODE_HA, CONF_MANAGE_SCHEDULES: False},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY  # HA mode needs neither
+    await hass.async_block_till_done()
+    await _unload(hass, hass.config_entries.async_entries(DOMAIN)[0])
+
+
+async def test_select_controller_without_time_helpers_is_refused(
+    hass: HomeAssistant, fake: FakeEasyTouch
+):
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
+    with pytest.raises(HomeAssistantError, match="time helpers"):
+        await hass.services.async_call(
+            "select",
+            "select_option",
+            {
+                "entity_id": _eid(hass, "select", "schedule_mode"),
+                "option": SCHEDULE_MODE_CONTROLLER,
+            },
+            blocking=True,
+        )
+    assert entry.options[CONF_SCHEDULE_MODE] == SCHEDULE_MODE_HA
     await _unload(hass, entry)

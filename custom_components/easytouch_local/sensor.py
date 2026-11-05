@@ -121,6 +121,7 @@ DESCRIPTIONS: tuple[EasyTouchSensorDescription, ...] = (
             "sync_error": c.schedule_sync.error,
             "last_sync": c.schedule_sync.last_success,
             "mode": c.schedule_mode,
+            "managed": c.manage_schedules,
         },
     ),
     EasyTouchSensorDescription(

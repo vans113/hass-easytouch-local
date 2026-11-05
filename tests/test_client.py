@@ -140,3 +140,42 @@ async def test_copies_header_byte_from_controller(client, fake):
     await client.set_circuit(6, True)
     assert 6 in fake.state.circuits
     assert not fake.wrong_header
+
+
+async def test_listen_stranger_cannot_replace_the_bridge():
+    """A connection from another address is closed and the bridge's link survives."""
+    import socket
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    c = EasyTouchClient(
+        "127.0.0.1", port, read_only=True, listen=True, allowed_peer="127.0.0.1", timing=FAST
+    )
+    c.start()
+    bridge = FakeEasyTouch(interval=0.05)
+    await bridge.start(serve=False)
+    try:
+        await bridge.dial("127.0.0.1", port)
+        assert await c.wait_for_status(3)
+        connects = c.stats.connects
+        # Another host on the network (127.0.0.2 stands in for it).
+        reader, writer = await asyncio.open_connection(
+            "127.0.0.1", port, local_addr=("127.0.0.2", 0)
+        )
+        assert await asyncio.wait_for(reader.read(), 2) == b""  # closed on us at once
+        writer.close()
+        await asyncio.sleep(0.3)
+        assert c.stats.rejected_peers == 1 and c.stats.last_rejected_peer == "127.0.0.2"
+        assert c.stats.connects == connects  # bridge was never dropped
+        assert c.available
+    finally:
+        await c.stop()
+        await bridge.stop()
+
+
+def test_normalize_ip():
+    from custom_components.easytouch_local.client import normalize_ip
+
+    assert normalize_ip("::ffff:192.168.5.173") == "192.168.5.173"
+    assert normalize_ip(" 192.168.5.173 ") == "192.168.5.173"

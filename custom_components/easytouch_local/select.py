@@ -5,10 +5,11 @@ from __future__ import annotations
 from homeassistant.components.select import SelectEntity
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import EasyTouchConfigEntry
-from .const import CONF_SCHEDULE_MODE, SCHEDULE_MODES
+from .const import CONF_SCHEDULE_MODE, SCHEDULE_MODE_CONTROLLER, SCHEDULE_MODES
 from .coordinator import EasyTouchCoordinator
 from .entity import EasyTouchEntity
 
@@ -22,8 +23,11 @@ async def async_setup_entry(
 
 
 class ScheduleModeSelect(EasyTouchEntity, SelectEntity):
-    """home_assistant: HA turns the pump on/off and the controller keeps no schedules.
-    controller: HA writes the schedules into the controller, which runs the pump itself.
+    """home_assistant: HA turns the pump on/off; with schedule management on, the
+    controller keeps no pump schedules.
+    controller: HA writes the pump schedules into the controller, which runs the
+    pump itself. Needs schedule management on and the time helpers set.
+    Schedules for any other circuit are never touched in either mode.
     """
 
     _attr_translation_key = "schedule_mode"
@@ -43,7 +47,19 @@ class ScheduleModeSelect(EasyTouchEntity, SelectEntity):
         return self.coordinator.schedule_mode
 
     async def async_select_option(self, option: str) -> None:
-        entry = self.coordinator.config_entry
+        coordinator = self.coordinator
+        if option == SCHEDULE_MODE_CONTROLLER:
+            if not coordinator.manage_schedules:
+                raise HomeAssistantError(
+                    "Turn on 'Manage pump schedules on the controller' in the integration's "
+                    "options before choosing Controller"
+                )
+            if missing := coordinator.missing_time_helpers():
+                raise HomeAssistantError(
+                    "Controller mode needs all six schedule time helpers set in the "
+                    f"integration's options (missing: {', '.join(missing)})"
+                )
+        entry = coordinator.config_entry
         self.coordinator.suppress_reload = True
         self.hass.config_entries.async_update_entry(
             entry, options={**entry.options, CONF_SCHEDULE_MODE: option}

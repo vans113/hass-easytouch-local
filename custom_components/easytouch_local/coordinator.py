@@ -29,6 +29,7 @@ from .const import (
     CLOCK_DRIFT_LIMIT,
     CLOCK_MIN_RESYNC,
     CONF_CIRCUIT_NAMES,
+    CONF_MANAGE_SCHEDULES,
     CONF_POWER_ENTITY,
     CONF_POWER_THRESHOLD,
     CONF_PUMP_CIRCUITS,
@@ -77,7 +78,9 @@ CLOCK_ALIGN = True  # wait for a minute boundary before setting the clock (tests
 
 @dataclass(slots=True)
 class ScheduleSyncState:
-    state: str = "unknown"  # in_sync | syncing | failed | listen_only | paused | unknown
+    state: str = (
+        "unknown"  # in_sync | syncing | failed | listen_only | not_managed | paused | unknown
+    )
     error: str | None = None
     last_success: datetime | None = None
     last_attempt: datetime | None = None
@@ -219,6 +222,15 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
     @property
     def schedule_mode(self) -> str:
         return str(self.opt(CONF_SCHEDULE_MODE))
+
+    @property
+    def manage_schedules(self) -> bool:
+        """Opt-in: may the integration write and clear pump schedules on the controller."""
+        return bool(self.opt(CONF_MANAGE_SCHEDULES))
+
+    def missing_time_helpers(self) -> list[str]:
+        """Time-helper options Controller mode needs that aren't set."""
+        return [key for key in TIME_HELPER_KEYS if not self.opt(key)]
 
     @property
     def unique_id(self) -> str:
@@ -474,9 +486,18 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
     # Schedules
     # ------------------------------------------------------------------ #
     def wanted_schedules(self) -> list[WantedSchedule]:
-        """What the controller should hold right now."""
+        """Pump schedules the controller should hold right now.
+
+        Only ever pump circuits: schedules for anything else on the panel are
+        not this integration's business.
+        """
         if self.schedule_mode != SCHEDULE_MODE_CONTROLLER:
-            return []  # HA runs the pump: the controller keeps no schedules
+            return []  # HA runs the pump: no pump schedules on the controller
+        if missing := self.missing_time_helpers():
+            raise ValueError(
+                "Controller mode needs all six schedule time helpers set in the "
+                f"integration's options (missing: {', '.join(missing)})"
+            )
         enabled_entity = self.opt(CONF_SCHEDULE_ENABLED_ENTITY)
         if enabled_entity:
             state = self.hass.states.get(enabled_entity)
@@ -536,12 +557,12 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
 
     @callback
     def _helper_changed(self, _: Event[EventStateChangedData]) -> None:
-        if not self.read_only:
+        if not self.read_only and self.manage_schedules:
             self._schedule_reconcile(SCHEDULE_DEBOUNCE, "schedule times changed")
 
     @callback
     def schedule_mode_changed(self) -> None:
-        if not self.read_only:
+        if not self.read_only and self.manage_schedules:
             self._schedule_reconcile(1, "schedule mode changed")
 
     async def async_reconcile_schedules(self, reason: str) -> None:
@@ -560,14 +581,27 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
             return
         if self._schedule_lock.locked():
             return
+        if not self.manage_schedules:
+            # Never write or clear anything; just read the slots for the sensor.
+            sync.state = "not_managed"
+            sync.error = None
+            ir.async_delete_issue(self.hass, DOMAIN, SCHEDULE_ISSUE)
+            async with self._schedule_lock:
+                try:
+                    await self.client.read_all_schedules()
+                except EasyTouchError as err:
+                    LOGGER.debug("Couldn't read the controller's schedules: %s", err)
+            self.async_update_listeners()
+            return
         async with self._schedule_lock:
             sync.state = "syncing"
             sync.last_attempt = dt_util.utcnow()
             self.async_update_listeners()
             try:
                 wanted = self.wanted_schedules()
+                managed = set(self.pump_circuits)
                 current = await self.client.read_all_schedules()
-                plan = plan_schedules(current, wanted)
+                plan = plan_schedules(current, wanted, managed)
                 if not plan.empty:
                     LOGGER.info(
                         "Schedule sync (%s): clearing %s, writing %s",
@@ -585,7 +619,7 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
                     )
                 if not plan.empty:
                     final = await self.client.read_all_schedules()
-                    if not plan_schedules(final, wanted).empty:
+                    if not plan_schedules(final, wanted, managed).empty:
                         raise EasyTouchError("the controller's schedules still don't match")
             except (EasyTouchError, ValueError) as err:
                 sync.state = "failed"

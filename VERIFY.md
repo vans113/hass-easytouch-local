@@ -19,7 +19,7 @@ How you test depends on how the EW11A is set up today:
 
 Firewall: the adapter is on the 192.168.5.x network, so allow it to reach Home Assistant on the chosen port (listen mode), or HA to reach the adapter (connect mode).
 
-- [ ] **Add the integration** with Listen only on. It should see status within a minute.
+- [ ] **Add the integration** with Listen only on. In listen mode enter the bridge's IP address; connections from anywhere else are refused (they show as `rejected_peers` in diagnostics). It should see status within a minute.
 - [ ] **Compare with njsPC for a day or two:** circuit states, air temp, salt level, chlorinator output/status, panel mode.
 - [ ] **Circuits**: in listen-only it only learns names when njsPC asks the panel for them; until then circuits show as *Circuit N*. Full names come once control is on.
 - [ ] **Pump start timer:** turn Pool on alone; `pump_start_timer` should be on for 5 minutes, then off as the motor stops.
@@ -30,16 +30,17 @@ Firewall: the adapter is on the 192.168.5.x network, so allow it to reach Home A
 
 1. Turn off HA's old automations that use the njsPC entities (*Pool pump schedule*, *Pool pump manual override*, the template switch's users) or repoint them to `switch.pool_controller_pool_pump`.
 2. Stop the njsPC, pool-relay and pool-schedule-sync containers on .19. Don't delete them yet. If the EW11A only had one socket, repoint it to Home Assistant's IP and port now.
-3. Integration options: turn **Listen only** off, set **Pump circuits** to `6, 2`. Leave *Who runs the pump schedule* on **Home Assistant** at first.
+3. Integration options: turn **Listen only** off, set **Pump circuits** to `6, 2`. Leave *Manage pump schedules on the controller* off and *Who runs the pump schedule* on **Home Assistant** at first. With management off nothing on the controller's schedules changes.
 4. Check:
    - [ ] **Circuit switches** appear with the panel's names (High Speed, Pool, …) within a minute.
    - [ ] **Pool pump switch** on: Pool and High speed both on, motor running past 5 minutes; off: both off.
    - [ ] **Reconnect re-read:** after a dropout the log shows "link up: re-reading circuits, schedules and clock".
-   - [ ] **Schedule sync** goes *in_sync* and the controller schedules sensor shows none (egg timers stay).
+   - [ ] **Schedule sync** shows *not_managed* and the controller schedules sensor lists what's on the panel, unchanged.
+   - [ ] Turn on *Manage pump schedules*: sync goes *in_sync*, pump-circuit schedules are removed, and any other circuit's schedules and egg timers stay.
    - [ ] **Sync controller clock** button: controller clock matches HA.
    - [ ] **A dropped write:** the log shows "not confirmed; resending" at most occasionally, never a failure.
    - [ ] **Service mode at the panel:** pump switch refuses with a clear message; sync shows *paused*.
-5. When ready, set *Who runs the pump schedule* to **Controller** and check:
+5. When ready, set the six time helpers in the options, then set *Who runs the pump schedule* to **Controller** and check:
    - [ ] Four schedules appear (Pool + High speed, Mon–Fri and Sat/Sun) in summer, two daily in winter.
    - [ ] They run the pump at the right times with HA's automation off.
    - [ ] Changing a time on the Pool view rewrites them within seconds.

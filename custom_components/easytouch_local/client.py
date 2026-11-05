@@ -24,6 +24,7 @@ from collections.abc import Callable
 import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime
+import ipaddress
 import logging
 import socket
 import time
@@ -59,6 +60,17 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def normalize_ip(value: str) -> str:
+    """Canonical text form of an IP; IPv4-mapped IPv6 (::ffff:a.b.c.d) becomes a.b.c.d."""
+    try:
+        ip = ipaddress.ip_address(str(value).strip().split("%", 1)[0])
+    except ValueError:
+        return str(value).strip()
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return str(ip)
 
 
 class EasyTouchError(Exception):
@@ -107,6 +119,8 @@ class LinkStats:
     last_error: str | None = None
     last_connected: float | None = None  # wall clock
     last_disconnected: float | None = None
+    rejected_peers: int = 0  # listen mode: connections from the wrong address
+    last_rejected_peer: str | None = None
 
 
 @dataclass(slots=True)
@@ -128,17 +142,22 @@ class EasyTouchClient:
         source_addr: int = DEFAULT_SOURCE_ADDR,
         read_only: bool = True,
         listen: bool = False,
+        allowed_peer: str | None = None,
         timing: Timing | None = None,
     ) -> None:
         """``listen=False``: connect to the bridge at host:port.
 
         ``listen=True``: open a TCP server on host:port (host "0.0.0.0" for all
         interfaces) and let the bridge connect to us, the way an EW11 in TCP
-        client mode connects to its server. The newest connection wins.
+        client mode connects to its server. Only connections from
+        ``allowed_peer`` (the bridge's IP address) are accepted; anything else
+        is closed straight away and never replaces the bridge's connection.
+        Among connections from the bridge, the newest wins.
         """
         self.host = host
         self.port = port
         self.listen = listen
+        self.allowed_peer = normalize_ip(allowed_peer) if allowed_peer else None
         self.source_addr = source_addr
         self.read_only = read_only
         self.sub_byte = OUT_SUB_BYTE  # replaced by the controller's own on first status
@@ -311,6 +330,19 @@ class EasyTouchClient:
 
     async def _accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
+        peer_ip = normalize_ip(peer[0]) if peer else None
+        if self.allowed_peer is not None and peer_ip != self.allowed_peer:
+            # Not the bridge: drop it without touching the bridge's connection.
+            self.stats.rejected_peers += 1
+            self.stats.last_rejected_peer = peer_ip
+            _LOGGER.warning(
+                "Refused a connection on port %s from %s (only the bridge at %s may connect)",
+                self.port,
+                peer_ip,
+                self.allowed_peer,
+            )
+            writer.close()
+            return
         _LOGGER.debug("Bridge connected from %s", peer)
         if self._writer is not None and not self._writer.is_closing():
             # A new connection means the bridge gave up on the old one.
@@ -757,6 +789,7 @@ class EasyTouchClient:
             "header_byte": self.sub_byte,
             "mode": "listen" if self.listen else "connect",
             "peer": self.peer,
+            "allowed_peer": self.allowed_peer,
             "circuits": {k: str(v) for k, v in sorted(self.circuits.items())},
             "custom_names": self.custom_names,
             "status_age_s": None if self.status_age is None else round(self.status_age, 1),

@@ -13,7 +13,7 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 | `switch.pool_controller_<circuit>` | **One switch per circuit**, found automatically and named as on the panel (custom names included). Circuits set to *Not Used* are skipped. |
 | `switch.pool_controller_pool_pump` | The pool pump. This one isn't a controller circuit: the integration builds it from the **pump circuits** you choose. Its `controls` attribute shows what it switches (e.g. `Pool + High Speed`). Turns the **pump circuits** you choose on together, in order, and off in reverse. On when all of them are on and, if a power sensor is set, the motor is actually drawing power. |
 | `switch.pool_controller_super_chlorinate` | IntelliChlor super-chlorinate, run by the controller (it keeps the pump on). On starts it for the hours set in the options (default 8); off cancels. Confirmed by reading it back; `hours_left` attribute. |
-| `select.pool_controller_schedule_runs_on` | **Home Assistant** (HA switches the pump; the controller keeps no schedules) or **Controller** (HA writes the schedules into the controller and the controller runs the pump itself) |
+| `select.pool_controller_schedule_runs_on` | **Home Assistant** (HA switches the pump) or **Controller** (HA writes the pump schedules into the controller and the controller runs the pump itself). Only acts when *Manage pump schedules* is on; see *Schedules* |
 | `binary_sensor.pool_controller_controller_link` | Fresh status is arriving from the controller |
 | `binary_sensor.pool_controller_schedule_sync` | Problem: the controller's schedules couldn't be made to match |
 | `binary_sensor.pool_controller_panel_service_mode` | Someone has the panel in Service/Timeout |
@@ -32,14 +32,14 @@ Built and tested against an EasyTouch2 4P with a two-speed pump. Other EasyTouch
 
 Most pools run the pump from the **Pool** circuit (6), and that's the default. Some need more than one circuit on at once. On a two-speed pump wired only to the **High Speed** relay, for example, the EasyTouch holds high speed for its 5-minute start timer after Pool turns on and then drops it, expecting the motor to carry on at low speed. With nothing on low speed the motor stops. Setting the pump circuits to `6, 2` (Pool, then High Speed) keeps it running. Whether high speed is on shows up in the status broadcast (byte 12, bit 3), which njsPC doesn't decode; this integration exposes it as `high_speed_active`.
 
-In Controller schedule mode every pump circuit gets its own schedule entry at the same times.
+In Controller schedule mode every pump circuit gets its own schedule entry at the same times. The pump circuits are also the only circuits whose schedules the integration will ever touch.
 
 ## Connecting to the bridge
 
 Two ways, picked when you add the integration:
 
 - **Home Assistant connects to the bridge**: the bridge (EW11) is a TCP *server*; enter its IP and port.
-- **The bridge connects to Home Assistant**: the bridge is a TCP *client*. Point its socket at Home Assistant's IP and the port you choose here (8899 by default). The newest connection always wins, and when the link goes quiet Home Assistant closes the socket so the bridge dials back in by itself.
+- **The bridge connects to Home Assistant**: the bridge is a TCP *client*. Point its socket at Home Assistant's IP and the port you choose here (8899 by default), and enter the **bridge's IP address**: connections from any other address are refused and logged, and never disturb the bridge's own connection (give the bridge a DHCP reservation). If the bridge itself reconnects, its newest connection wins, and when the link goes quiet Home Assistant closes the socket so the bridge dials back in by itself.
 
 ## Reliability
 
@@ -53,12 +53,14 @@ Two ways, picked when you add the integration:
 
 ## Schedules
 
-The schedule mode select decides who runs the pump:
+**Nothing on the controller's schedules is changed unless you turn on *Manage pump schedules on the controller* in the options.** It's off by default, including when you turn off *Listen only*. With it off the integration only reads the schedules (for the diagnostic sensor) and the sync button refuses.
 
-- **Home Assistant**: your own automation switches `switch.pool_controller_pool_pump`. The integration keeps the controller's schedule slots empty (anything added at the panel is removed and reported). Egg timers are never touched.
-- **Controller**: the integration builds the schedules from your time helpers and writes them into the controller: Pool + High speed, Mon–Fri and Sat/Sun windows in the summer months, one daily window otherwise. It reads every slot back to prove they stuck, re-checks every 30 minutes, after reconnecting and whenever a helper changes, and raises a repair issue if they won't stick. The controller then runs the pump on its own clock, so the pool keeps its schedule even if Wi-Fi, HA or the server is down.
+With it on, the integration manages schedules **for the pump circuits only**. Schedules for any other circuit (lights, heater, AUX) and egg timers are never cleared, moved or overwritten, and only empty slots or the pump's own slots are used. The schedule mode select then decides who runs the pump:
 
-The time helpers and the schedule on/off helper are set in the options (defaults: the `input_datetime.pool_*` and `input_boolean.pool_pump_schedule_enabled` helpers).
+- **Home Assistant**: your own automation switches `switch.pool_controller_pool_pump`. The integration keeps pump schedules off the controller (one added at the panel for a pump circuit is removed), so the two never fight.
+- **Controller** (needs all six time helpers set): the integration builds the schedules from your time helpers and writes them into the controller: Pool + High speed, Mon–Fri and Sat/Sun windows in the summer months, one daily window otherwise. It reads every slot back to prove they stuck, re-checks every 30 minutes, after reconnecting and whenever a helper changes, and raises a repair issue if they won't stick. The controller then runs the pump on its own clock, so the pool keeps its schedule even if Wi-Fi, HA or the server is down.
+
+The time helpers (`input_datetime` or `time` entities) and the optional schedule on/off helper are set in the options; none are set by default. Choosing Controller without schedule management on, or without all six time helpers, is refused with a message saying what's missing.
 
 ## Clock
 
@@ -76,13 +78,14 @@ The controller's clock is set from Home Assistant every night at 03:00 (which al
 | Option | Default | Meaning |
 | --- | --- | --- |
 | Listen only | on | Never send anything to the controller |
+| Manage pump schedules on the controller | off | Opt-in. Off: schedules on the controller are never written or cleared. On: only the pump circuits' schedules are managed |
 | Who runs the pump schedule | Home Assistant | See *Schedules* |
 | Pump circuits | 6 | Circuits the pool pump switch turns on together, in order (`6, 2` for Pool + High Speed) |
 | Rename circuits | — | Optional `2:Pump High Speed, 3:Lights` overrides for the panel's names |
-| Pump power sensor | SPAN pool equipment sensor | Optional; vetoes "on" when the relay is on but the motor draws nothing |
+| Pump power sensor | — | Optional; vetoes "on" when the relay is on but the motor draws nothing |
 | Running if power is at least | 300 W | Threshold for the above |
 | Summer months | 4-10 | Months that use the summer weekday/weekend windows |
-| Time helpers, schedule on/off helper | `input_datetime.pool_*`, `input_boolean.pool_pump_schedule_enabled` | Used in Controller mode |
+| Time helpers, schedule on/off helper | — | The six time helpers are required for Controller mode; the on/off helper is optional |
 | RS-485 address to send from | 33 | Leave alone unless another remote uses it |
 
 ## Cutover from njsPC

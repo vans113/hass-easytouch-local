@@ -19,6 +19,7 @@ async def async_get_config_entry_diagnostics(
         "schedule_sync": {
             "state": c.schedule_sync.state,
             "error": c.schedule_sync.error,
+            "managed": c.manage_schedules,
             "last_success": str(c.schedule_sync.last_success),
         },
         "clock_drift_min": c.clock_drift,

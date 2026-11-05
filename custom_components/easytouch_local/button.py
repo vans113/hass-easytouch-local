@@ -51,6 +51,11 @@ class SyncSchedulesButton(_Button):
 
     async def async_press(self) -> None:
         self._check()
+        if not self.coordinator.manage_schedules:
+            raise HomeAssistantError(
+                "Schedule management is off, so nothing is written to the controller; "
+                "turn on 'Manage pump schedules on the controller' in the options"
+            )
         await self.coordinator.async_reconcile_schedules("button")
         if self.coordinator.schedule_sync.state == "failed":
             raise HomeAssistantError(
