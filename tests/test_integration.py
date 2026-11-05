@@ -311,7 +311,13 @@ async def test_controller_mode_writes_and_verifies_schedules(
     await _unload(hass, entry)
 
 
-async def test_schedule_failure_raises_repair_and_problem(hass: HomeAssistant, fake: FakeEasyTouch):
+async def test_schedule_failure_raises_repair_only_after_it_persists(
+    hass: HomeAssistant, fake: FakeEasyTouch, monkeypatch
+):
+    from homeassistant.helpers import issue_registry as ir
+
+    import custom_components.easytouch_local.coordinator as coord
+
     fake.state.schedules[1] = bytes([1, 6, 9, 0, 12, 55, 62])
     fake.drop_writes[145] = 99  # never sticks
     entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
@@ -319,9 +325,46 @@ async def test_schedule_failure_raises_repair_and_problem(hass: HomeAssistant, f
     problem = _eid(hass, "binary_sensor", "schedule_problem")
     assert await _until(hass, lambda: coordinator.schedule_sync.state == "failed", 8)
     assert hass.states.get(problem).state == STATE_ON
+    # One failure is not enough for a repair issue (default: 30 minutes of failing).
+    assert not ir.async_get(hass).async_get_issue(DOMAIN, "schedule_sync_failed")
+    # Still failing once the window has passed: now it's raised.
+    monkeypatch.setattr(coord, "SCHEDULE_ISSUE_AFTER", 0.0)
+    await coordinator.async_reconcile_schedules("test")
+    assert ir.async_get(hass).async_get_issue(DOMAIN, "schedule_sync_failed")
+    await _unload(hass, entry)
+
+
+async def test_link_drop_mid_sync_is_not_a_schedule_failure(
+    hass: HomeAssistant, fake: FakeEasyTouch, monkeypatch
+):
     from homeassistant.helpers import issue_registry as ir
 
-    assert ir.async_get(hass).async_get_issue(DOMAIN, "schedule_sync_failed")
+    from custom_components.easytouch_local.client import NotConnectedError
+    import custom_components.easytouch_local.coordinator as coord
+
+    monkeypatch.setattr(coord, "SCHEDULE_ISSUE_AFTER", 0.0)
+    entry = await _setup(hass, fake, **{CONF_READ_ONLY: False, **MANAGE})
+    coordinator = entry.runtime_data
+    assert await _until(hass, lambda: coordinator.schedule_sync.state == "in_sync")
+    real = coordinator.client.read_all_schedules
+    calls = 0
+
+    async def flaky():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise NotConnectedError("link lost")
+        return await real()
+
+    monkeypatch.setattr(coordinator.client, "read_all_schedules", flaky)
+    problem = _eid(hass, "binary_sensor", "schedule_problem")
+    await coordinator.async_reconcile_schedules("periodic check")
+    assert coordinator.schedule_sync.state == "waiting_for_link"
+    await hass.async_block_till_done()
+    assert hass.states.get(problem).state == STATE_OFF
+    assert not ir.async_get(hass).async_get_issue(DOMAIN, "schedule_sync_failed")
+    await coordinator.async_reconcile_schedules("link up")
+    assert coordinator.schedule_sync.state == "in_sync"
     await _unload(hass, entry)
 
 

@@ -23,7 +23,7 @@ from homeassistant.helpers.event import (
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .client import EasyTouchClient, EasyTouchError, ReadOnlyError
+from .client import EasyTouchClient, EasyTouchError, NotConnectedError, ReadOnlyError
 from .const import (
     CHLOR_POLL_INTERVAL,
     CLOCK_DRIFT_LIMIT,
@@ -53,6 +53,7 @@ from .const import (
     REFRESH_INTERVAL,
     SCHEDULE_CHECK_INTERVAL,
     SCHEDULE_DEBOUNCE,
+    SCHEDULE_ISSUE_AFTER,
     SCHEDULE_MODE_CONTROLLER,
     SCHEDULE_RETRY_DELAY,
     TIME_HELPER_KEYS,
@@ -78,10 +79,10 @@ CLOCK_ALIGN = True  # wait for a minute boundary before setting the clock (tests
 
 @dataclass(slots=True)
 class ScheduleSyncState:
-    state: str = (
-        "unknown"  # in_sync | syncing | failed | listen_only | not_managed | paused | unknown
-    )
+    # in_sync | syncing | failed | waiting_for_link | listen_only | not_managed | paused | unknown
+    state: str = "unknown"
     error: str | None = None
+    failing_since: float | None = None  # monotonic; first failure of the current run
     last_success: datetime | None = None
     last_attempt: datetime | None = None
 
@@ -622,22 +623,35 @@ class EasyTouchCoordinator(DataUpdateCoordinator[Status | None]):
                     if not plan_schedules(final, wanted, managed).empty:
                         raise EasyTouchError("the controller's schedules still don't match")
             except (EasyTouchError, ValueError) as err:
-                sync.state = "failed"
-                sync.error = str(err)
-                LOGGER.warning("Schedule sync failed (%s): %s", reason, err)
-                ir.async_create_issue(
-                    self.hass,
-                    DOMAIN,
-                    SCHEDULE_ISSUE,
-                    is_fixable=False,
-                    severity=ir.IssueSeverity.ERROR,
-                    translation_key=SCHEDULE_ISSUE,
-                    translation_placeholders={"error": str(err)},
-                )
-                self._schedule_reconcile(SCHEDULE_RETRY_DELAY, "retry after failure")
+                if isinstance(err, NotConnectedError) or not self.client.available:
+                    # The link dropped mid-sync. Not a schedule problem: the full
+                    # re-read when it comes back syncs again.
+                    sync.state = "waiting_for_link"
+                    sync.error = str(err)
+                    LOGGER.info("Schedule sync (%s) interrupted by the link: %s", reason, err)
+                    self._schedule_reconcile(SCHEDULE_RETRY_DELAY, "retry after link drop")
+                else:
+                    sync.state = "failed"
+                    sync.error = str(err)
+                    now = time.monotonic()
+                    if sync.failing_since is None:
+                        sync.failing_since = now
+                    LOGGER.warning("Schedule sync failed (%s): %s", reason, err)
+                    if now - sync.failing_since >= SCHEDULE_ISSUE_AFTER:
+                        ir.async_create_issue(
+                            self.hass,
+                            DOMAIN,
+                            SCHEDULE_ISSUE,
+                            is_fixable=False,
+                            severity=ir.IssueSeverity.ERROR,
+                            translation_key=SCHEDULE_ISSUE,
+                            translation_placeholders={"error": str(err)},
+                        )
+                    self._schedule_reconcile(SCHEDULE_RETRY_DELAY, "retry after failure")
             else:
                 sync.state = "in_sync"
                 sync.error = None
+                sync.failing_since = None
                 sync.last_success = dt_util.utcnow()
                 ir.async_delete_issue(self.hass, DOMAIN, SCHEDULE_ISSUE)
             self.async_update_listeners()

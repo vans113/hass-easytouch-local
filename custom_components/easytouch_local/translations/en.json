@@ -202,7 +202,7 @@
   "issues": {
     "schedule_sync_failed": {
       "title": "Pool controller schedules aren't in sync",
-      "description": "Writing the pump schedule to the EasyTouch didn't work: {error}\n\nIt retries every 5 minutes. Check the controller link, the panel and the integration's options."
+      "description": "Writing the pump schedule to the EasyTouch has kept failing for 30 minutes: {error}\n\nIt retries every 5 minutes. Brief link dropouts don't count: this means the controller is connected but won't take the schedule. Check the panel and the integration's options."
     },
     "bridge_address_missing": {
       "title": "Pool controller: set the bridge address",

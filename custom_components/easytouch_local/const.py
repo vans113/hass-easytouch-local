@@ -79,6 +79,7 @@ PROBE_WAIT_LISTEN = 60.0  # a bridge in client mode may take a while to dial in
 SCHEDULE_CHECK_INTERVAL = timedelta(minutes=30)
 CHLOR_POLL_INTERVAL = timedelta(minutes=5)  # super-chlorinate hours left, setpoints
 SCHEDULE_RETRY_DELAY = 300.0  # seconds after a failed schedule sync
+SCHEDULE_ISSUE_AFTER = 1800.0  # a sync must keep failing this long before a repair issue
 SCHEDULE_DEBOUNCE = 5.0  # seconds after a helper change
 RECONNECT_SETTLE = 10.0  # seconds after the link comes back before writing
 CLOCK_DRIFT_LIMIT = 2  # minutes
